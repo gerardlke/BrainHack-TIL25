@@ -2,3 +2,20 @@
 
 fastapi
 uvicorn[standard]
+opencv-python
+einops
+ray
+ray[tune]
+dm_tree
+scipy
+tensorflow[and-cuda]
+tensorflow-probability[tf]
+tf-keras
+
+# TODO: also have to do the following: 
+# pip uninstall tree
+# pip uninstall dm-tree
+# pip install --upgrade ray
+# pip install dm-tree
+
+# pip install --upgrade tensorflow-probability

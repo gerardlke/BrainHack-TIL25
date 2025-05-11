@@ -25,6 +25,7 @@ async def rl(request: Request) -> dict[str, list[dict[str, int]]]:
     # each is a dict with one key "observation" and the value as a dictionary observation
     for instance in input_json["instances"]:
         observation = instance["observation"]
+
         # reset environment on a new round
         if observation["step"] == 0:
             await reset({})
@@ -51,3 +52,6 @@ async def reset(_: Request) -> None:
 def health() -> dict[str, str]:
     """Health check function for your model."""
     return {"message": "health ok"}
+
+
+# uvicorn rl_server:app --port 5004 --host 0.0.0.0 --reload

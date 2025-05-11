@@ -13,7 +13,7 @@ NUM_ROUNDS = 8
 
 
 def main(novice: bool):
-    env = gridworld.env(env_wrappers=[], render_mode=None, novice=novice)
+    env = gridworld.env(env_wrappers=[], render_mode='human', novice=novice)
     # be the agent at index 0
     _agent = env.possible_agents[0]
     rewards = {agent: 0 for agent in env.possible_agents}
