@@ -1,5 +1,3 @@
-docker run -v C:\GERARD\Coding\Projects\BrainHack-TIL25\asr\src:/workspace -p 5001:5001 mcdonalds_workers-asr:TAG
-
 # ASR
 
 Your ASR challenge is to transcribe a noisy recording of speech.

@@ -15,10 +15,10 @@ from transformers import pipeline, Wav2Vec2ForCTC, Wav2Vec2Processor, Wav2Vec2Fo
 import io
 import base64
 import torchaudio
-
-import soundfile as sf
 import numpy as np
-
+import soundfile as sf
+from scipy.signal import resample
+        
 class ASRManager:
 
     def __init__(self, encoder_model="facebook/wav2vec2-base-960h", decoder_type="ctc"):
@@ -47,38 +47,60 @@ class ASRManager:
         self.decoder_type = decoder_type
 
 
-    def _preprocess_audio(self, audio_bytes: bytes):
-        """Converts bytes to a waveform and resamples to 16kHz mono."""
-        try:
-            with torch.no_grad():
-                # Decode b64 audio into bytes
-                audio_bytes = base64.b64decode(audio_bytes)
+#     def preprocess_audio(self, audio_bytes: bytes):
+#         """Converts bytes to a waveform and resamples to 16kHz mono."""
+#         # try:
+#         with torch.no_grad():
+#             # Decode b64 audio into bytes and creates a buffer in memory to store it (torch audio only works with filepaths or file like objects)
+#             audio_bytes = io.BytesIO(audio_bytes)
 
-                # Creates buffer in memory to store bytes
-                if type(audio_bytes) is bytes:
-                    audio_bytes = io.BytesIO(audio_bytes)
+#             # Converts raw audio bytes into torch tensors and retrieves sample rate (frequency)
+#             waveform, sample_rate = torchaudio.load(audio_bytes, format="wav")
 
-                # Converts raw audio bytes into torch tensors and retrieves sample rate (frequency)
-                waveform, sample_rate = torchaudio.load(audio_bytes)
+#             # Converts stereo or multi-channel audio to mono by averaging channels (but maybe point of experimentation)
+#             if waveform.shape[0] > 1:
+#                 waveform = waveform.mean(dim=0, keepdim=True)
 
-                # Converts stereo or multi-channel audio to mono by averaging channels (but maybe point of experimentation)
-                if waveform.shape[0] > 1:
-                    waveform = waveform.mean(dim=0, keepdim=True)
+#             # Resample to 16kHz if needed
+#             if sample_rate != 16000:
+#                 resampler = torchaudio.transforms.Resample(orig_freq=sample_rate, new_freq=16000)
+#                 waveform = resampler(waveform)
 
-                # Resample to 16kHz if needed
-                if sample_rate != 16000:
-                    resampler = torchaudio.transforms.Resample(orig_freq=sample_rate, new_freq=16000)
-                    waveform = resampler(waveform)
+#             # Normalize to [-1.0, 1.0]
+#             max_val = waveform.abs().max()
+#             if max_val > 0:
+#                 waveform = waveform / max_val
 
-                # Normalize to [-1.0, 1.0]
-                waveform = waveform / (waveform.abs().max() + 1e-5)
+#             # Remove extra dimensions and return numpy array
+#             waveform = waveform.squeeze().numpy()
 
-                # Remove extra dimensions and return numpy array
-                waveform = waveform.squeeze().numpy()
-                
-            return waveform
-        except Exception as e:
-            raise Exception(f'Error preprocessing audio: {e}')
+#         return waveform
+#         # except Exception as e:
+#         #     raise Exception(f'Error preprocessing audio: {e}')
+        
+        
+    def preprocess_audio(self, audio_bytes: str):  
+        """Decodes base64-encoded WAV, converts to mono, resamples to 16kHz, and returns numpy array."""
+        # Wrap bytes in a buffer
+        audio_buffer = io.BytesIO(audio_bytes)
+
+        # Read using soundfile
+        waveform, sample_rate = sf.read(audio_buffer)
+
+        # If stereo/multi-channel, average to mono
+        if waveform.ndim > 1:
+            waveform = np.mean(waveform, axis=1)
+
+        # Resample to 16kHz if necessary
+        target_sr = 16000
+        if sample_rate != target_sr:
+            num_samples = int(len(waveform) * target_sr / sample_rate)
+            waveform = resample(waveform, num_samples)
+
+        # Normalize to [-1, 1]
+        waveform = waveform / (np.max(np.abs(waveform)) + 1e-5)
+
+        return waveform.astype(np.float32)
 
     def asr(self, audio_bytes: bytes) -> str:
         """Performs ASR transcription on an audio file.
@@ -89,7 +111,7 @@ class ASRManager:
         Returns:
             A string containing the transcription of the audio.
         """
-        audio_bytes = self._preprocess_audio(audio_bytes)
+        audio_bytes = self.preprocess_audio(audio_bytes)
 
         # Method 1
         # result = self.pipeline(audio_bytes)
