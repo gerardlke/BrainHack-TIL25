@@ -127,9 +127,9 @@ celerybeat.pid
 
 # Environments
 .env
-.venv
+.venv*
 env/
-venv/
+venv*/
 ENV/
 env.bak/
 venv.bak/
@@ -172,5 +172,11 @@ cython_debug/
 src/gcloud/*.json
 
 
-# raydreamer
+# others
 ray-dreamer
+logs*
+*logs
+my_training_runs
+checkpoints
+*.zip
+.vscode

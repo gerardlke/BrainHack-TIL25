@@ -46,6 +46,7 @@ def main(novice: bool):
                 # take random action from other agents
                 action = env.action_space(agent).sample()
             env.step(action)
+
     env.close()
     print(f"total rewards: {rewards[_agent]}")
     print(f"score: {rewards[_agent] / NUM_ROUNDS / 100}")
