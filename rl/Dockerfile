@@ -13,8 +13,8 @@ WORKDIR /workspace
 
 # Installs your dependencies.
 RUN pip install -U pip
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY test_requirements.txt .
+RUN pip install --no-cache-dir -r test_requirements.txt
 
 # Copies your source files.
 COPY src .

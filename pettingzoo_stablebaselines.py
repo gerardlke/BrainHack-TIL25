@@ -15,7 +15,7 @@ from ray.tune.schedulers import PopulationBasedTraining
 
 GLOB_NOVICE = False
 GLOB_ENV = 'binary_viewcone'
-EXPERIMENT_NAME = 'adv_actual_pbt_long_exp'
+EXPERIMENT_NAME = 'adv_binary_long_test'
 
 def make_new_vec_gridworld(render_mode=None, env_type='normal', num_vec_envs=1):
     gridworld = build_env(
@@ -38,7 +38,7 @@ def evaluate(model, agents, num_rounds=10, render_mode='human'):
         # where the first player is always the scout and the others are guards
         # so just build world from scratch again
         gridworld = build_env(
-            env_type='normal',
+            env_type=GLOB_ENV,
             env_wrappers=[],
             render_mode=render_mode,
             novice=GLOB_NOVICE,
@@ -56,7 +56,8 @@ def evaluate(model, agents, num_rounds=10, render_mode='human'):
             if termination or truncation:
                 action = None
             else:
-                action, _states = model.predict(observation, deterministic=False)
+                action, _states = model.predict('what', deterministic=False)
+                print('actions???', action)
             gridworld.step(action)
         
         print('intermediate rewards', interm_rewards)
@@ -69,7 +70,7 @@ def evaluate(model, agents, num_rounds=10, render_mode='human'):
 
 def train(config):
 
-    gridworld, vec_env = make_new_vec_gridworld(num_vec_envs=2, env_type='binary_viewcone')
+    gridworld, vec_env = make_new_vec_gridworld(num_vec_envs=4, env_type=GLOB_ENV)
     trial_name = session.get_trial_name()
 
     model = PPO(
@@ -88,7 +89,7 @@ def train(config):
     )
 
     model.learn(
-        total_timesteps=1000000, 
+        total_timesteps=10, 
         callback=checkpoint_callback)
 
     model.save(f"/mnt/e/BrainHack-TIL25/checkpoints/ppo/{trial_name}/final_ppo_model_for_run_{trial_name}")
@@ -137,7 +138,7 @@ if __name__ == "__main__":
                 "gae_lambda": tune.uniform(0.70, 0.99),
             })
         tuner = Tuner(
-            tune.with_resources(train, resources={"cpu": 3.0, "gpu": 0.5}),
+            tune.with_resources(train, resources={"cpu": 2.0, "gpu":0.5, "memory": 4 * 1024 ** 3}),
             tune_config=tune.TuneConfig(
                 scheduler=pbt,
                 num_samples=200,
@@ -170,7 +171,7 @@ if __name__ == "__main__":
     else:
         model = PPO.load(args.ckpt)
         gridworld = build_env(
-            env_type='normal',
+            env_type=GLOB_ENV,
             env_wrappers=[],
             render_mode='human',
             novice=False,
