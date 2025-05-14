@@ -2,10 +2,14 @@ import supersuit as ss
 import ray
 import argparse
 
+from independent_dqn import IndependentDQN
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
+from stable_baselines3.common.env_util import make_vec_env
 
-from til_environment.stablebaselines_gridworld import build_env
+# from til_environment.stablebaselines_gridworld import build_env
+from til_environment.gridworld import env
 from pettingzoo.utils.conversions import aec_to_parallel
 
 from ray import tune
@@ -18,8 +22,13 @@ GLOB_ENV = 'binary_viewcone'
 EXPERIMENT_NAME = 'adv_binary_long_test'
 
 def make_new_vec_gridworld(render_mode=None, env_type='normal', num_vec_envs=1):
-    gridworld = build_env(
-        env_type=env_type,
+    # gridworld = build_env(
+    #     env_type=env_type,
+    #     env_wrappers=[],
+    #     render_mode=render_mode,
+    #     novice=GLOB_NOVICE,
+    # )
+    gridworld = env(
         env_wrappers=[],
         render_mode=render_mode,
         novice=GLOB_NOVICE,
@@ -27,6 +36,14 @@ def make_new_vec_gridworld(render_mode=None, env_type='normal', num_vec_envs=1):
     gridworld = aec_to_parallel(gridworld)
     vec_env = ss.pettingzoo_env_to_vec_env_v1(gridworld)
     vec_env = ss.concat_vec_envs_v1(vec_env, num_vec_envs=num_vec_envs, num_cpus=2, base_class='stable_baselines3')
+
+    # print('vec_env', vec_env)
+    # out = vec_env.reset()
+    # print('out reset', out)
+    # print('out shapes', [v.shape for o, v in out.items()])
+    # action = [0, 3, 2, 4]
+    # vec_env.step(action)
+    # print('------------------ACTION?????----------------------')
 
     return gridworld, vec_env
 
@@ -37,8 +54,13 @@ def evaluate(model, agents, num_rounds=10, render_mode='human'):
         # environment switches player when reset is called, but we want fixed evaluation
         # where the first player is always the scout and the others are guards
         # so just build world from scratch again
-        gridworld = build_env(
-            env_type=GLOB_ENV,
+        # gridworld = build_env(
+        #     env_type=GLOB_ENV,
+        #     env_wrappers=[],
+        #     render_mode=render_mode,
+        #     novice=GLOB_NOVICE,
+        # )
+        gridworld = env(
             env_wrappers=[],
             render_mode=render_mode,
             novice=GLOB_NOVICE,
@@ -70,18 +92,20 @@ def evaluate(model, agents, num_rounds=10, render_mode='human'):
 
 def train(config):
 
-    gridworld, vec_env = make_new_vec_gridworld(num_vec_envs=4, env_type=GLOB_ENV)
+    gridworld, vec_env = make_new_vec_gridworld(num_vec_envs=2, env_type=GLOB_ENV)
     trial_name = session.get_trial_name()
+    num_agents = 4
 
-    model = PPO(
+    model = IndependentDQN(
         "MultiInputPolicy",
-        vec_env,
+        num_agents=num_agents,
+        env=vec_env,
         verbose=1,
         tensorboard_log=f"/mnt/e/BrainHack-TIL25/ppo_logs/{trial_name}",
         **config
     )
 
-    # Set where to save the model
+    # TODO: make it multi agent Set where to save the model
     checkpoint_callback = CheckpointCallback(
         save_freq=10000,                    # Save every n steps
         save_path=f"/mnt/e/BrainHack-TIL25/checkpoints/ppo/{trial_name}",         # Target directory
@@ -89,8 +113,8 @@ def train(config):
     )
 
     model.learn(
-        total_timesteps=10, 
-        callback=checkpoint_callback)
+        total_timesteps=100000, 
+        callbacks=[checkpoint_callback] * num_agents)
 
     model.save(f"/mnt/e/BrainHack-TIL25/checkpoints/ppo/{trial_name}/final_ppo_model_for_run_{trial_name}")
 
@@ -129,19 +153,19 @@ if __name__ == "__main__":
         perturbation_interval=5,  # every n trials
         hyperparam_mutations={
                 "learning_rate": tune.loguniform(1e-5, 1e-2),
-                "gamma": tune.uniform(0.80, 0.999),
-                "n_steps": tune.choice([256, 512, 1024]),
-                "batch_size": tune.choice([64, 128]),
-                "n_epochs": tune.choice([5, 7, 10]),
-                "vf_coef": tune.uniform(0.10, 0.80),
-                "ent_coef": tune.loguniform(1e-6, 1e-4),
-                "gae_lambda": tune.uniform(0.70, 0.99),
+                # "gamma": tune.uniform(0.80, 0.999),
+                # "n_steps": tune.choice([256, 512, 1024]),
+                # "batch_size": tune.choice([64, 128]),
+                # "n_epochs": tune.choice([5, 7, 10]),
+                # "vf_coef": tune.uniform(0.10, 0.80),
+                # "ent_coef": tune.loguniform(1e-6, 1e-4),
+                # "gae_lambda": tune.uniform(0.70, 0.99),
             })
         tuner = Tuner(
-            tune.with_resources(train, resources={"cpu": 2.0, "gpu":0.5, "memory": 4 * 1024 ** 3}),
+            tune.with_resources(train, resources={"cpu": 2.0, "memory": 4 * 1024 ** 3}),
             tune_config=tune.TuneConfig(
                 scheduler=pbt,
-                num_samples=200,
+                num_samples=1,
                 reuse_actors=True,
             ),
         )
@@ -170,11 +194,16 @@ if __name__ == "__main__":
 
     else:
         model = PPO.load(args.ckpt)
-        gridworld = build_env(
-            env_type=GLOB_ENV,
+        # gridworld = build_env(
+        #     env_type=GLOB_ENV,
+        #     env_wrappers=[],
+        #     render_mode='human',
+        #     novice=False,
+        # )
+        gridworld = env(
             env_wrappers=[],
-            render_mode='human',
-            novice=False,
+            render_mode=render_mode,
+            novice=GLOB_NOVICE,
         )
 
         evaluate(model, gridworld.possible_agents, num_rounds=10, render_mode='human')

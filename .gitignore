@@ -180,3 +180,6 @@ my_training_runs
 checkpoints
 *.zip
 .vscode
+dreamerv3
+dreamervenv
+torchvenv
