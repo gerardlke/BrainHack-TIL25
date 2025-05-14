@@ -106,15 +106,15 @@ def train(config):
     )
 
     # TODO: make it multi agent Set where to save the model
-    checkpoint_callback = CheckpointCallback(
+    checkpoint_callbacks = [[CheckpointCallback(
         save_freq=10000,                    # Save every n steps
-        save_path=f"/mnt/e/BrainHack-TIL25/checkpoints/ppo/{trial_name}",         # Target directory
+        save_path=f"/mnt/e/BrainHack-TIL25/checkpoints/dqn_agent_{i}/{trial_name}",         # Target directory
         name_prefix=f"{EXPERIMENT_NAME}_novice_{GLOB_NOVICE}_run_{trial_name}"
-    )
+    )] for i in range(num_agents)]
 
     model.learn(
         total_timesteps=100000, 
-        callbacks=[checkpoint_callback] * num_agents)
+        callbacks=checkpoint_callbacks)
 
     model.save(f"/mnt/e/BrainHack-TIL25/checkpoints/ppo/{trial_name}/final_ppo_model_for_run_{trial_name}")
 

@@ -2,7 +2,8 @@ import time
 from collections import deque, defaultdict
 from typing import Any, Dict, List, Optional, Type, Union
 
-import gymnasium as gym
+import gymnasium
+from gymnasium import spaces
 import numpy as np
 import torch as th
 from gymnasium.spaces import Box, Discrete
@@ -15,11 +16,13 @@ from stable_baselines3.common.utils import (configure_logger, obs_as_tensor,
                                             safe_mean)
 from stable_baselines3.common.vec_env import DummyVecEnv
 from pettingzoo import ParallelEnv
-
+from stable_baselines3.common.type_aliases import TrainFrequencyUnit
+from stable_baselines3.common.utils import safe_mean, should_collect_more_steps
 from stable_baselines3.common.buffers import ReplayBuffer
 from supersuit.vector.markov_vector_wrapper import MarkovVectorEnv
+from stable_baselines3.common.noise import ActionNoise, VectorizedActionNoise
 
-class DummyGymEnv(gym.Env):
+class DummyGymEnv(gymnasium.Env):
     def __init__(self, observation_space, action_space):
         self.observation_space = observation_space
         self.action_space = action_space
@@ -43,7 +46,13 @@ class IndependentDQN(OffPolicyAlgorithm):
     changes the agent whose observations are being returned. This is why (unintuitively)
     you will see many `last` calls.
 
+    Inherits from OffPolicyAlgorithm, but changes who owns and does what.
+    Anything related to the scheduling of the iterations, steps, episodes, etc. are handled
+    in this class. Anything else, will be defaulted onto agent attributes / agent handling.
+    hence why you see many for loops (bad programming but oh well), and agent.`this_and_that`
+    everywhere
     """
+
     def __init__(
         self,
         policy: Union[str, Type[ActorCriticPolicy]],
@@ -78,12 +87,17 @@ class IndependentDQN(OffPolicyAlgorithm):
         self.num_envs = env.num_envs // num_agents
         self.observation_space = env.observation_space
         self.action_space = env.action_space
+        self.learning_starts = learning_starts
+        self.train_freq = train_freq
+        super()._convert_train_freq()
 
         self.tensorboard_log = tensorboard_log
         self.verbose = verbose
         self._logger = None
         env_fn = lambda: DummyGymEnv(self.observation_space, self.action_space)
         dummy_env = DummyVecEnv([env_fn] * self.num_envs)
+        # this is a wrapper class, so it will not hold any states like
+        # buffer_size, or action_noise. pass those straight to DQN.
         self.agents = [
             DQN(
                 policy=policy,
@@ -118,18 +132,24 @@ class IndependentDQN(OffPolicyAlgorithm):
     def learn(
         self,
         total_timesteps: int,
-        callbacks: Optional[List[MaybeCallback]] = None,
+        callbacks: Optional[List[List[MaybeCallback]]] = None,
         log_interval: int = 1,
         tb_log_name: str = "IndependentDQN",
         reset_num_timesteps: bool = True,
     ):
-        base_callbacks = [
-            'something'
-        ] * self.num_agents
+        """
+        Main learn function. Mainly goes as follows:
+
+        target: collect rollbacks and train up till total_timesteps.
+        """
+
+        if callbacks is not None:
+            assert len(callbacks) == self.num_agents, 'callbacks must a list of num_agents number of nested lists'
+            assert all(isinstance(callback, list) for callback in callbacks), 'callbacks must a list of num_agents number of nested lists'
+
         num_timesteps = 0
         all_total_timesteps = []
-        if not callbacks:
-            callbacks = [None] * self.num_agents
+        
         self._logger = configure_logger(
             self.verbose,
             self.tensorboard_log,
@@ -138,7 +158,8 @@ class IndependentDQN(OffPolicyAlgorithm):
         )
         logdir = self.logger.dir
 
-        # Setup for each policy. Reset things, setup timestep tracking things
+        # Setup for each policy. Reset things, setup timestep tracking things.
+        # replace certain agent attributes
         for agent_id, agent in enumerate(self.agents):
             agent.start_time = time.time()
             if agent.ep_info_buffer is None or reset_num_timesteps:
@@ -175,12 +196,14 @@ class IndependentDQN(OffPolicyAlgorithm):
         # we determine number of envs based on the output shape (should find a better way to do this)
         reset_obs = self.env.reset()
         last_obs = defaultdict(dict)
-        num_envs = int(list(reset_obs.values())[0].shape[0] / self.num_agents)
+
         for agent in range(self.num_agents):  #
-            start, end = agent * num_envs, agent * (num_envs + 1)
-            last_obs[agent] = {
-                k: v[start:end, ...] for k, v in reset_obs.items()
-            }
+            for envid in range(self.num_envs):
+                last_obs[envid * self.num_agents + agent] = {
+                    k: v[envid * self.num_agents + agent, ...] for k, v in reset_obs.items()
+                }
+                print('--------NUMBER',     envid * self.num_agents + agent)
+                print(last_obs[envid * self.num_agents + agent])
 
         for agent in self.agents:
             agent._last_episode_starts = np.ones((self.num_envs,), dtype=bool)
@@ -188,97 +211,130 @@ class IndependentDQN(OffPolicyAlgorithm):
         while num_timesteps < total_timesteps:
             # environment sampling. has to be done in this particular way because of
             # gridworld's perculiarities
-            last_obs = self.collect_rollouts(last_obs, callbacks)
-            num_timesteps += self.num_envs * self.n_steps
+            last_obs = self.collect_rollouts(
+                last_obs=last_obs,
+                callbacks=callbacks,
+                train_freq=self.train_freq,
+                learning_starts=self.learning_starts,
+            )
+            num_timesteps += self.num_envs * self.num_timesteps
 
-            # policy training.
-            for agent_id, policy in enumerate(self.agents):
-                policy._update_current_progress_remaining(
-                    policy.num_timesteps, total_timesteps
+            # agent training.
+            for agent_id, agent in enumerate(self.agents):
+                agent._update_current_progress_remaining(
+                    agent.num_timesteps, total_timesteps
                 )
                 if log_interval is not None and num_timesteps % log_interval == 0:
-                    fps = int(policy.num_timesteps / (time.time() - policy.start_time))
-                    policy.logger.record("policy_id", agent_id, exclude="tensorboard")
-                    policy.logger.record(
+                    fps = int(agent.num_timesteps / (time.time() - agent.start_time))
+                    agent.logger.record("agent_id", agent_id, exclude="tensorboard")
+                    agent.logger.record(
                         "time/iterations", num_timesteps, exclude="tensorboard"
                     )
                     if (
-                        len(policy.ep_info_buffer) > 0
-                        and len(policy.ep_info_buffer[0]) > 0
+                        len(agent.ep_info_buffer) > 0
+                        and len(agent.ep_info_buffer[0]) > 0
                     ):
-                        policy.logger.record(
+                        agent.logger.record(
                             "rollout/ep_rew_mean",
                             safe_mean(
-                                [ep_info["r"] for ep_info in policy.ep_info_buffer]
+                                [ep_info["r"] for ep_info in agent.ep_info_buffer]
                             ),
                         )
-                        policy.logger.record(
+                        agent.logger.record(
                             "rollout/ep_len_mean",
                             safe_mean(
-                                [ep_info["l"] for ep_info in policy.ep_info_buffer]
+                                [ep_info["l"] for ep_info in agent.ep_info_buffer]
                             ),
                         )
-                    policy.logger.record("time/fps", fps)
-                    policy.logger.record(
+                    agent.logger.record("time/fps", fps)
+                    agent.logger.record(
                         "time/time_elapsed",
-                        int(time.time() - policy.start_time),
+                        int(time.time() - agent.start_time),
                         exclude="tensorboard",
                     )
-                    policy.logger.record(
+                    agent.logger.record(
                         "time/total_timesteps",
-                        policy.num_timesteps,
+                        agent.num_timesteps,
                         exclude="tensorboard",
                     )
-                    policy.logger.dump(step=policy.num_timesteps)
+                    agent.logger.dump(step=agent.num_timesteps)
 
-                policy.train()
+                agent.train()
 
         for callback in callbacks:
             callback.on_training_end()
 
-    def collect_rollouts(self, last_obs, callbacks):
+    def collect_rollouts(
+            self,
+            last_obs,
+            callbacks,
+            train_freq,
+            learning_starts: int = 0,
+        ):
         """
-        Helper function to collect rollouts (sample the env)
+        Helper function to collect rollouts (sample the env and feed observations into the agents, vice versa)
+        This function will be fed by an exiting last_observation; that is the one generated by self.env.reset
+        
         """
-
         # temporary lists to hold things before saved into history_buffer of agent.
         all_last_episode_starts = [None] * self.num_agents
+        all_clipped_actions = [None] * self.num_agents
         all_obs = [None] * self.num_agents
-        all_last_obs = [None] * self.num_agents
+        all_next_obs = [None] * self.num_agents
         all_rewards = [None] * self.num_agents
         all_dones = [None] * self.num_agents
         all_infos = [None] * self.num_agents
-        steps = 0
+        
+        num_collected_steps, num_collected_episodes = 0, 0
 
+        # iterate over agents, and do pre-rollout setups.
         for agent_id, agent in enumerate(self.agents):
             for envid in range(self.num_envs):
                 assert (
                     last_obs[envid * self.num_agents + agent_id] is not None
                 ), f"No previous observation was provided for env_{envid}_policy_{agent_id}"
-            all_last_obs[agent_id] = np.array(
+            # tensorized
+            all_obs[agent_id] = np.array(
                 [
-                    last_obs[envid * self.num_agents + agent_id]
+                    {k: obs_as_tensor(v, agent.device) 
+                        for k, v in last_obs[envid * self.num_agents + agent_id].items()}
                     for envid in range(self.num_envs)
                 ]
             )
+            print('all_obs[agent_id]', all_obs[agent_id])
             agent.policy.set_training_mode(False)
-            callbacks[agent_id].on_rollout_start()
+
+            assert train_freq.frequency > 0, "Should at least collect one step or episode."
+
+            if self.num_envs > 1:
+                assert train_freq.unit == TrainFrequencyUnit.STEP, "You must use only one env when doing episodic training."
+
+            if agent.use_sde:
+                agent.actor.reset_noise(self.num_envs)  # type: ignore[operator]
+
+            print('callbacks', callbacks)
+            [callback.on_rollout_start() for callback in callbacks]
             all_last_episode_starts[agent_id] = agent._last_episode_starts
 
-        while steps < self.n_steps:
+        # loop over action -> step -> observation -> agents -> action ... loop
+        while should_collect_more_steps(train_freq, num_collected_steps, num_collected_episodes):
             all_actions = [None] * self.num_agents
-            all_values = [None] * self.num_agents
-            all_log_probs = [None] * self.num_agents
-            all_clipped_actions = [None] * self.num_agents
             with th.no_grad():
                 for agent_id, agent in enumerate(self.agents):
-                    obs_tensor = obs_as_tensor(all_last_obs[agent_id], agent.device)
-                    (
-                        all_actions[agent_id],
-                        all_values[agent_id],
-                        all_log_probs[agent_id],
-                    ) = agent.policy.forward(obs_tensor)
-                    clipped_actions = all_actions[agent_id].cpu().numpy()
+                    # for k, v in all_obs[agent_id]:
+                    #     all_obs[agent_id][k] =
+                    # obs_tensor = obs_as_tensor(all_obs[agent_id], agent.device)
+                    # sample random action or according to policy.
+                    actions, buffer_actions = self._sample_action(
+                        agent=agent,
+                        obs=all_obs[agent_id],
+                        learning_starts=learning_starts,
+                        n_envs=self.num_envs,
+                    )
+                    all_actions[agent_id] = actions
+                    if hasattr(all_actions[agent_id], 'cpu'):
+                        all_actions[agent_id] = all_actions[agent_id].cpu()
+                    clipped_actions = all_actions[agent_id]
                     if isinstance(self.action_space, Box):
                         clipped_actions = np.clip(
                             clipped_actions,
@@ -296,13 +352,14 @@ class IndependentDQN(OffPolicyAlgorithm):
                 np.vstack(all_clipped_actions).transpose().reshape(-1)
             )  # reshape as (env, action)
 
-            # actually step
+            # actually step in the environment
             obs, rewards, dones, infos = self.env.step(all_clipped_actions)
 
+            # append observations, rewards and others into `all_` lists.
             for agent_id in range(self.num_agents):
                 all_obs[agent_id] = np.array(
                     [
-                        obs[envid * self.num_agents + agent_id]
+                        {k: vobs[envid * self.num_agents + agent_id].items()}
                         for envid in range(self.num_envs)
                     ]
                 )
@@ -336,32 +393,29 @@ class IndependentDQN(OffPolicyAlgorithm):
             for agent_id, policy in enumerate(self.agents):
                 policy._update_info_buffer(all_infos[agent_id])
 
-            steps += 1
+            self.num_timesteps += self.num_envs
+            num_collected_steps += 1
 
-            # add data to the rollout buffers
+            # add data to the replay buffers
             for agent_id, agent in enumerate(self.agents):
                 if isinstance(self.action_space, Discrete):
                     all_actions[agent_id] = all_actions[agent_id].reshape(-1, 1)
                 all_actions[agent_id] = all_actions[agent_id].cpu().numpy()
                 agent.replay_buffer.add(
-                    all_last_obs[agent_id],
-                    all_actions[agent_id],
-                    all_rewards[agent_id],
-                    all_last_episode_starts[agent_id],
-                    all_values[agent_id],
-                    all_log_probs[agent_id],
+                    obs=all_obs[agent_id],
+                    next_obs=all_next_obs[agent_id],
+                    action=all_actions[agent_id],
+                    reward=all_rewards[agent_id],
+                    done=all_dones[agent_id],
+                    infos=all_infos[agent_id],
                 )
-            all_last_obs = all_obs
+            all_obs = all_next_obs
             all_last_episode_starts = all_dones
 
-        with th.no_grad():
-            for agent_id, policy in enumerate(self.agents):
-                obs_tensor = obs_as_tensor(all_last_obs[agent_id], policy.device)
-                _, value, _ = policy.policy.forward(obs_tensor)
-                print('')
-                # policy.rollout_buffer.compute_returns_and_advantage(
-                #     last_values=value, dones=all_dones[agent_id]
-                # )
+        # special dqn thing.
+        for agent_id, agent in enumerate(self.agents):
+            if hasattr(agent, '_on_step'):
+                agent._on_step()
 
         for callback in callbacks:
             callback.on_rollout_end()
@@ -383,7 +437,7 @@ class IndependentDQN(OffPolicyAlgorithm):
         tensorboard_log: Optional[str] = None,
         verbose: int = 0,
         **kwargs,
-    ) -> "IndependentPPO":
+    ) -> "IndependentDQN":
         model = cls(
             policy=policy,
             num_agents=num_agents,
@@ -397,7 +451,7 @@ class IndependentDQN(OffPolicyAlgorithm):
         env_fn = lambda: DummyGymEnv(env.observation_space, env.action_space)
         dummy_env = DummyVecEnv([env_fn] * (env.num_envs // num_agents))
         for agent_id in range(num_agents):
-            model.policies[agent_id] = PPO.load(
+            model.policies[agent_id] = DQN.load(
                 path=path + f"/policy_{agent_id + 1}/model", env=dummy_env, **kwargs
             )
         return model
@@ -405,3 +459,50 @@ class IndependentDQN(OffPolicyAlgorithm):
     def save(self, path: str) -> None:
         for agent_id in range(self.num_agents):
             self.agents[agent_id].save(path=path + f"/policy_{agent_id + 1}/model")
+
+    def _sample_action(
+        self,
+        agent,
+        obs,
+        learning_starts: int,
+        n_envs: int = 1,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Sample an action according to the exploration policy.
+        This is either done by sampling the probability distribution of the policy,
+        or sampling a random action (from a uniform distribution over the action space)
+        or by adding noise to the deterministic output.
+
+        :param learning_starts: Number of steps before learning for the warm-up phase.
+        :param n_envs:
+        :return: action to take in the environment
+            and scaled action that will be stored in the replay buffer.
+            The two differs when the action space is not normalized (bounds are not [-1, 1]).
+        """
+        # Select action randomly or according to policy
+        if agent.num_timesteps < learning_starts and not (agent.use_sde and agent.use_sde_at_warmup):
+            # Warmup phase
+            unscaled_action = np.array([agent.action_space.sample() for _ in range(n_envs)])
+        else:
+            # Note: when using continuous actions,
+            # we assume that the policy uses tanh to scale the action
+            # We use non-deterministic action in the case of SAC, for TD3, it does not matter
+            unscaled_action, _ = agent.predict(obs, deterministic=False)
+
+        # Rescale the action from [low, high] to [-1, 1]
+        if isinstance(agent.action_space, spaces.Box):
+            scaled_action = agent.policy.scale_action(unscaled_action)
+
+            # Add noise to the action (improve exploration)
+            if agent.action_noise is not None:
+                scaled_action = np.clip(scaled_action + agent.action_noise(), -1, 1)
+
+            # We store the scaled action in the buffer
+            buffer_action = scaled_action
+            action = agent.policy.unscale_action(scaled_action)
+        else:
+            # Discrete case, no need to normalize or clip
+            buffer_action = unscaled_action
+            action = buffer_action
+
+        return action, buffer_action
