@@ -7,8 +7,8 @@ from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 from stable_baselines3.common.env_util import make_vec_env
 
-# from til_environment.stablebaselines_gridworld import build_env
-from til_environment.training_gridworld import env
+from til_environment.stablebaselines_gridworld import build_env
+# from til_environment.training_gridworld import env
 from pettingzoo.utils.conversions import aec_to_parallel
 
 from ray import tune
@@ -17,24 +17,24 @@ from ray.air import session
 from ray.tune.schedulers import PopulationBasedTraining
 
 GLOB_NOVICE = True
-GLOB_ENV = 'binary_viewcone'
+GLOB_ENV = 'normal'
 EXPERIMENT_NAME = 'novice_long_test_dqn'
 
 def make_new_vec_gridworld(render_mode=None, env_type='normal', num_vec_envs=1):
     """
     Helper func to build gridworld into a vectorized form. Will also return original AEC env for evaluation too, so dont worry
     """
-    # gridworld = build_env(
-    #     env_type=env_type,
-    #     env_wrappers=[],
-    #     render_mode=render_mode,
-    #     novice=GLOB_NOVICE,
-    # )
-    gridworld = env(
+    gridworld = build_env(
+        env_type=env_type,
         env_wrappers=[],
         render_mode=render_mode,
         novice=GLOB_NOVICE,
     )
+    # gridworld = env(
+    #     env_wrappers=[],
+    #     render_mode=render_mode,
+    #     novice=GLOB_NOVICE,
+    # )
     gridworld = aec_to_parallel(gridworld)
     vec_env = ss.pettingzoo_env_to_vec_env_v1(gridworld)
     vec_env = ss.concat_vec_envs_v1(vec_env, num_vec_envs=num_vec_envs, num_cpus=2, base_class='stable_baselines3')
@@ -44,18 +44,16 @@ def make_new_vec_gridworld(render_mode=None, env_type='normal', num_vec_envs=1):
 
 def train(config):
 
-    gridworld, vec_env = make_new_vec_gridworld(render_mode='rgb_array', num_vec_envs=2, env_type=GLOB_ENV)
+    num_policies = 2
+    num_agents = 4
+    gridworld, vec_env = make_new_vec_gridworld(render_mode='human', num_vec_envs=num_policies, env_type=GLOB_ENV)
     trial_name = session.get_trial_name()
-    num_agents = 2
 
-    agent_grad_steps = config.pop('agent_grad_steps')
-
-    model = IndependentDQN(
-        "MultiInputPolicy",
+    model = IndependentRecurrentPPO(
+        "MultiInputLstmPolicy",
+        num_policies=num_policies,
         num_agents=num_agents,
         env=vec_env,
-        learning_starts=100,
-        train_freq=1024,
         verbose=1,
         tensorboard_log=f"/mnt/e/BrainHack-TIL25/ppo_logs/{trial_name}",
         **config
@@ -66,11 +64,11 @@ def train(config):
         save_freq=10000,                    # Save every n steps
         save_path=f"/mnt/e/BrainHack-TIL25/checkpoints/dqn_agent_{i}/{trial_name}",         # Target directory
         name_prefix=f"{EXPERIMENT_NAME}_novice_{GLOB_NOVICE}_run_{trial_name}"
-    )] for i in range(num_agents)]
+    )] for i in range(num_policies)]
 
     model.learn(
-        agent_grad_steps=agent_grad_steps,
-        total_timesteps=1000, 
+        total_timesteps=2000, 
+        n_rollout_steps=1000,
         callbacks=checkpoint_callbacks)
     print('rewards:', np.unique(model.agents[0].replay_buffer.rewards, return_counts=True))
     print('replay buff pos', model.agents[0].replay_buffer.pos)
@@ -80,10 +78,10 @@ def train(config):
     # .load instantiates a new instance of the model. This is to simulate how you would run inference for this model.
     # instantiate the model, and do rollouts without action noise or randomness or sampling from replay buffer.
     gridworld, vec_env = make_new_vec_gridworld(render_mode='rgb_array', num_vec_envs=1, env_type=GLOB_ENV)
-    eval_model = IndependentDQN.load(
-        policy="MultiInputPolicy",
+    eval_model = IndependentRecurrentPPO.load(
+        policy="MultiInputLstmPolicy",
         path=f"/mnt/e/BrainHack-TIL25/checkpoints/ppo/{trial_name}/final_ppo_model_for_run_{trial_name}",
-        num_agents=num_agents,
+        num_policies=num_policies,
         train_freq=(100, 'episode'),  # we arent training, we're just running for 100 rounds before stopping rollout.
         learning_starts=0,  # no random sampling of action space
         env=vec_env,
@@ -134,7 +132,6 @@ if __name__ == "__main__":
         perturbation_interval=5,  # every n trials
         hyperparam_mutations={
                 "learning_rate": tune.loguniform(1e-5, 1e-2),
-                "agent_grad_steps": tune.choice([256, 512, 1024]),
                 # "gamma": tune.uniform(0.80, 0.999),
                 # "n_steps": tune.choice([256, 512, 1024]),
                 # "batch_size": tune.choice([64, 128]),

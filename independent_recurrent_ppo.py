@@ -115,7 +115,9 @@ class IndependentRecurrentPPO(OnPolicyAlgorithm):
         self.num_agents = num_agents
         self.num_policies = num_policies
 
+        # keep seperate variables for number of envs 
         self.num_envs = env.num_envs // num_agents
+
         self.observation_space = env.observation_space
         self.action_space = env.action_space
 
@@ -123,7 +125,7 @@ class IndependentRecurrentPPO(OnPolicyAlgorithm):
         self.verbose = verbose
         self._logger = None
         env_fn = lambda: DummyGymEnv(self.observation_space, self.action_space)
-        dummy_env = DummyVecEnv([env_fn] * self.num_envs)
+        dummy_envs = [DummyVecEnv([env_fn] * 6), DummyVecEnv([env_fn] * 2)]
         # this is a wrapper class, so it will not hold any states like
         # buffer_size, or action_noise. pass those straight to DQN.
 
@@ -132,7 +134,7 @@ class IndependentRecurrentPPO(OnPolicyAlgorithm):
         self.policies = [
             RecurrentPPO(
                 policy=policy,
-                env=env,
+                env=dummy_envs[i],
                 learning_rate=learning_rate,
                 n_steps=n_steps,
                 batch_size=batch_size,
@@ -156,7 +158,7 @@ class IndependentRecurrentPPO(OnPolicyAlgorithm):
                 device=device,
                 _init_setup_model=_init_setup_model,
             )
-            for _ in range(self.num_policies)
+            for i in range(self.num_policies)
         ]
 
         assert self.num_policies == 2, 'Right now only supports 2 num_policies; 1 for scout and 1 unified guard'
@@ -164,6 +166,7 @@ class IndependentRecurrentPPO(OnPolicyAlgorithm):
     def learn(
         self,
         total_timesteps: int,
+        n_rollout_steps: int,
         callbacks: Optional[List[List[MaybeCallback]]] = None,
         log_interval: int = 1,
         tb_log_name: str = "RecurrentPPO",
@@ -177,8 +180,8 @@ class IndependentRecurrentPPO(OnPolicyAlgorithm):
         """
 
         if callbacks is not None:
-            assert len(callbacks) == self.num_agents, 'callbacks must a list of num_agents number of nested lists'
-            assert all(isinstance(callback, list) for callback in callbacks), 'callbacks must a list of num_agents number of nested lists'
+            assert len(callbacks) == self.num_policies, 'callbacks must a list of num_policies number of nested lists'
+            assert all(isinstance(callback, list) for callback in callbacks), 'callbacks must a list of num_policies number of nested lists'
 
         num_timesteps = 0
         all_total_timesteps = []
@@ -237,9 +240,8 @@ class IndependentRecurrentPPO(OnPolicyAlgorithm):
             # gridworld's perculiarities
             last_obs, rollout_timesteps = self.collect_rollouts(
                 last_obs=reset_obs,
+                n_rollout_steps=n_rollout_steps,
                 callbacks=callbacks,
-                train_freq=self.train_freq,
-                learning_starts=self.learning_starts,
             )
             num_timesteps += rollout_timesteps
 
@@ -321,7 +323,10 @@ class IndependentRecurrentPPO(OnPolicyAlgorithm):
         
         n_steps = 0
         # before formatted, last_obs is the direct return of self.env.reset()
-        last_obs = self.format_env_returns(last_obs, device=self.agents[0].device)
+        policy_mapping = last_obs['scout']
+        # the boolean mask to apply on each observation, mapping each to each policy.
+        # as a sanity check, this should be [1 0 0 0] since self.env is freshly initialized.
+        last_obs = self.format_env_returns(last_obs, policy_mapping, device=self.policies[0].device)
 
         # iterate over agents, and do pre-rollout setups.
         for polid, policy in enumerate(self.policies):
@@ -345,10 +350,13 @@ class IndependentRecurrentPPO(OnPolicyAlgorithm):
 
             with th.no_grad():
                 for polid, policy in enumerate(self.policies):
-                    
-                    obs_tensor = obs_as_tensor(last_obs, policy.device)
+                    print('last_obs[polid]', last_obs[polid])
                     episode_starts = th.tensor(policy._last_episode_starts, dtype=th.float32, device=policy.device)
-                    actions, values, log_probs, lstm_states = policy.policy.forward(obs_tensor, lstm_states, episode_starts)
+                    actions, values, log_probs, lstm_states = policy.policy.forward(
+                        last_obs[polid],
+                        lstm_states,
+                        episode_starts
+                    )
                     print('actions??', actions)
                     all_actions[polid] = actions
                     if hasattr(all_actions[polid], 'cpu'):
@@ -387,17 +395,17 @@ class IndependentRecurrentPPO(OnPolicyAlgorithm):
             if not [callback.on_step() for callback in callbacks]:
                 break
 
-            num_collected_steps += self.num_envs
+            n_steps += self.num_envs
 
             # add data to the replay buffers
-            for polid, agent in enumerate(self.agents):
-                agents._update_info_buffer(all_infos[polid])
+            for polid, policy in enumerate(self.policies):
+                policy._update_info_buffer(all_infos[polid])
                 if isinstance(self.action_space, Discrete):
                     all_actions[polid] = all_actions[polid].reshape(-1, 1)
                 if hasattr(all_actions[polid], 'cpu'):
                     all_actions[polid] = all_actions[polid].cpu().numpy()
                 # all_obs[polid] is a list[dict[str, np.ndarray]], but add only wants per dict. hence this loop
-                agent.replay_buffer.add(
+                policy.rollout_buffer.add(
                     obs=deepcopy(last_obs[polid]),
                     next_obs=deepcopy(all_curr_obs[polid]),
                     action=deepcopy(all_buffer_actions[polid]),
@@ -405,6 +413,15 @@ class IndependentRecurrentPPO(OnPolicyAlgorithm):
                     done=deepcopy(all_dones[polid]),
                     infos=deepcopy(all_infos[polid]),
                 )
+                # rollout_buffer.add(
+                #     self._last_obs,
+                #     actions,
+                #     rewards,
+                #     self._last_episode_starts,
+                #     values,
+                #     log_probs,
+                #     lstm_states=self._last_lstm_states,
+                # )
 
             last_obs = all_curr_obs
             all_last_episode_starts = all_dones
@@ -465,20 +482,17 @@ class IndependentRecurrentPPO(OnPolicyAlgorithm):
     def format_env_returns(
         self,
         env_returns: dict[str, np.ndarray] | np.ndarray | list[dict],
+        policy_mapping: list,
         to_tensor=True,
         device=None,
-        two_agents=True
     ):
         """
         Helper function to format returns based on if they are a dict of arrays or just arrays.
         We expect the first dimension of these arrays to be (num_envs * num_agents).
 
         The flow is as follows:
-        1. Use indexing to extract the appropriate observations per agent.
-        2. Query the environment to discover which agents are guards, and which are scouts. From this, gather a mapping rule
-            e.g [0 1 0 0] (1st index is the scout, so that output will be fed to the scout policy of index 1.) (0th, 2nd and 3rd
-            index are guards, so their outputs will be fed to the guard policy which sits on index zero.)
-        3. Finally apply this mapping to the extracted observations list. If a policy has 
+        1. Generate indexes for each policy
+        2. Use indexes to extract the appropriate observations per policy.
 
         Args:
             env_returns: dict[str, np.ndarray] | np.ndarray | list. We expect the first dimension of these arrays / length of list to be (num_envs * num_agents).
@@ -487,7 +501,6 @@ class IndependentRecurrentPPO(OnPolicyAlgorithm):
         
         Right now, very hardcoded to two agents
         """
-        to_agents = [None] * self.num_agents
         if to_tensor:
             assert device is not None, 'Assertion failed. format_env_returns function expects device to be stated if you want to run obs_as_tensor mutation.'
             mutate_func = obs_as_tensor
@@ -496,30 +509,25 @@ class IndependentRecurrentPPO(OnPolicyAlgorithm):
             mutate_func = lambda x: x  # noqa: E731
             kwargs = {}
 
+        policy_mapping = np.array(policy_mapping)
+        policy_indexes = [None] * self.num_policies
+        for polid in range(self.num_policies):
+            policy_indexes[polid] = np.where(policy_mapping == polid)[0]
+            print('policy_indexes[polid]', policy_indexes[polid])
+
         # 1. appropriate indexing
         if isinstance(env_returns, dict):
-            to_agents = [
-                    {k: mutate_func(v[polid::self.num_agents], **kwargs) 
+            to_policies = [
+                    {k: mutate_func(np.take(v, policy_indexes[polid], axis=0), **kwargs) 
                         for k, v in env_returns.items()}
-                for polid in range(self.num_agents)
+                for polid in range(self.num_policies)
             ]
-            # print('to_agents>>>???', to_agents)
-        elif isinstance(env_returns, np.ndarray):
-            to_agents = [mutate_func(env_returns[polid::self.num_agents], **kwargs)
-                            for polid in range(self.num_agents) ]
-        elif isinstance(env_returns, list):
-            to_agents = [
-                    env_returns[polid::self.num_agents] for polid in range(self.num_agents)
+        elif isinstance(env_returns, np.ndarray) or isinstance(env_returns, list):
+            to_policies = [
+                mutate_func(np.take(env_returns, policy_indexes[polid], axis=0), **kwargs) for polid in range(self.num_policies)
             ]
         else:
             raise AssertionError(f'Assertion failed. format_env_returns recieved unexpected type {type(env_returns)}. \
                 Expected dict[str, np.ndarray] or np.ndarray or list.')
 
-        # 2. retrieve [0 1 0 0] here
-        agents = self.env.agents
-        scout = self.env.scout
-        
-
-        # 3. do boolean masking
-
-        return to_agents
+        return to_policies
