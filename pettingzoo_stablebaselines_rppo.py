@@ -1,15 +1,14 @@
 import supersuit as ss
 import ray
 import argparse
-
-from independent_dqn import IndependentDQN
-from stable_baselines3 import PPO
+import numpy as np
+from independent_recurrent_ppo import IndependentRecurrentPPO
 from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 from stable_baselines3.common.env_util import make_vec_env
 
 # from til_environment.stablebaselines_gridworld import build_env
-from til_environment.gridworld import env
+from til_environment.training_gridworld import env
 from pettingzoo.utils.conversions import aec_to_parallel
 
 from ray import tune
@@ -17,11 +16,14 @@ from ray.tune import Tuner
 from ray.air import session
 from ray.tune.schedulers import PopulationBasedTraining
 
-GLOB_NOVICE = False
+GLOB_NOVICE = True
 GLOB_ENV = 'binary_viewcone'
-EXPERIMENT_NAME = 'adv_binary_long_test'
+EXPERIMENT_NAME = 'novice_long_test_dqn'
 
 def make_new_vec_gridworld(render_mode=None, env_type='normal', num_vec_envs=1):
+    """
+    Helper func to build gridworld into a vectorized form. Will also return original AEC env for evaluation too, so dont worry
+    """
     # gridworld = build_env(
     #     env_type=env_type,
     #     env_wrappers=[],
@@ -37,69 +39,23 @@ def make_new_vec_gridworld(render_mode=None, env_type='normal', num_vec_envs=1):
     vec_env = ss.pettingzoo_env_to_vec_env_v1(gridworld)
     vec_env = ss.concat_vec_envs_v1(vec_env, num_vec_envs=num_vec_envs, num_cpus=2, base_class='stable_baselines3')
 
-    # print('vec_env', vec_env)
-    # out = vec_env.reset()
-    # print('out reset', out)
-    # print('out shapes', [v.shape for o, v in out.items()])
-    # action = [0, 3, 2, 4]
-    # vec_env.step(action)
-    # print('------------------ACTION?????----------------------')
+    return gridworld.aec_env, vec_env
 
-    return gridworld, vec_env
-
-def evaluate(model, agents, num_rounds=10, render_mode='human'):
-    rewards = {agent: 0 for agent in agents}
-
-    for _ in range(num_rounds):
-        # environment switches player when reset is called, but we want fixed evaluation
-        # where the first player is always the scout and the others are guards
-        # so just build world from scratch again
-        # gridworld = build_env(
-        #     env_type=GLOB_ENV,
-        #     env_wrappers=[],
-        #     render_mode=render_mode,
-        #     novice=GLOB_NOVICE,
-        # )
-        gridworld = env(
-            env_wrappers=[],
-            render_mode=render_mode,
-            novice=GLOB_NOVICE,
-        )
-        gridworld.reset()
-        interm_rewards = {agent: 0 for agent in agents}
-        for agent in gridworld.agent_iter():
-            observation, reward, termination, truncation, info = gridworld.last()
-            observation = {
-                k: v if type(v) is int else v.tolist() for k, v in observation.items()
-            }
-            for a in gridworld.agents:
-                rewards[a] += gridworld.rewards[a]
-                interm_rewards[a] += gridworld.rewards[a]
-            if termination or truncation:
-                action = None
-            else:
-                action, _states = model.predict('what', deterministic=False)
-                print('actions???', action)
-            gridworld.step(action)
-        
-        print('intermediate rewards', interm_rewards)
-
-    gridworld.close()
-
-    mean_rewards = {k: v / num_rounds for k, v in rewards.items()}
-
-    return mean_rewards
 
 def train(config):
 
-    gridworld, vec_env = make_new_vec_gridworld(num_vec_envs=2, env_type=GLOB_ENV)
+    gridworld, vec_env = make_new_vec_gridworld(render_mode='rgb_array', num_vec_envs=2, env_type=GLOB_ENV)
     trial_name = session.get_trial_name()
-    num_agents = 4
+    num_agents = 2
+
+    agent_grad_steps = config.pop('agent_grad_steps')
 
     model = IndependentDQN(
         "MultiInputPolicy",
         num_agents=num_agents,
         env=vec_env,
+        learning_starts=100,
+        train_freq=1024,
         verbose=1,
         tensorboard_log=f"/mnt/e/BrainHack-TIL25/ppo_logs/{trial_name}",
         **config
@@ -113,13 +69,38 @@ def train(config):
     )] for i in range(num_agents)]
 
     model.learn(
-        total_timesteps=100000, 
+        agent_grad_steps=agent_grad_steps,
+        total_timesteps=1000, 
         callbacks=checkpoint_callbacks)
+    print('rewards:', np.unique(model.agents[0].replay_buffer.rewards, return_counts=True))
+    print('replay buff pos', model.agents[0].replay_buffer.pos)
 
     model.save(f"/mnt/e/BrainHack-TIL25/checkpoints/ppo/{trial_name}/final_ppo_model_for_run_{trial_name}")
 
-    results_dict = evaluate(model, gridworld.possible_agents, num_rounds=100, render_mode=None)
+    # .load instantiates a new instance of the model. This is to simulate how you would run inference for this model.
+    # instantiate the model, and do rollouts without action noise or randomness or sampling from replay buffer.
+    gridworld, vec_env = make_new_vec_gridworld(render_mode='rgb_array', num_vec_envs=1, env_type=GLOB_ENV)
+    eval_model = IndependentDQN.load(
+        policy="MultiInputPolicy",
+        path=f"/mnt/e/BrainHack-TIL25/checkpoints/ppo/{trial_name}/final_ppo_model_for_run_{trial_name}",
+        num_agents=num_agents,
+        train_freq=(100, 'episode'),  # we arent training, we're just running for 100 rounds before stopping rollout.
+        learning_starts=0,  # no random sampling of action space
+        env=vec_env,
+    )
 
+    reset_obs = vec_env.reset()
+    # hijack collect_rollouts function to evaluate for us.
+    eval_model.collect_rollouts(
+        last_obs=reset_obs,
+        train_freq=eval_model.train_freq,
+        learning_starts=eval_model.learning_starts,
+        run_on_step=False,
+    )
+    
+    print('rewards:', np.unique(eval_model.agents[0].replay_buffer.rewards))
+    
+    # results_dict = evaluate(model, num_rounds=100, render_mode=None)
     mean_all_score = sum(results_dict.values()) / 4
     mean_scout_score = results_dict.pop('player_0')
     mean_guard_score = sum(results_dict.values()) / 3
@@ -153,6 +134,7 @@ if __name__ == "__main__":
         perturbation_interval=5,  # every n trials
         hyperparam_mutations={
                 "learning_rate": tune.loguniform(1e-5, 1e-2),
+                "agent_grad_steps": tune.choice([256, 512, 1024]),
                 # "gamma": tune.uniform(0.80, 0.999),
                 # "n_steps": tune.choice([256, 512, 1024]),
                 # "batch_size": tune.choice([64, 128]),
