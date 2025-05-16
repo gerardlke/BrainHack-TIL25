@@ -213,7 +213,7 @@ class IndependentRecurrentPPO(OnPolicyAlgorithm):
             policy._logger = configure_logger(
                 policy.verbose,
                 logdir,
-                "policy",
+                f"policy_{polid}",
                 reset_num_timesteps,
             )
 
@@ -252,6 +252,14 @@ class IndependentRecurrentPPO(OnPolicyAlgorithm):
                         len(policy.ep_info_buffer) > 0
                         and len(policy.ep_info_buffer[0]) > 0
                     ):
+                        print('rollout/ep_rew_mean', 
+                        safe_mean(
+                                [ep_info["r"] for ep_info in policy.ep_info_buffer]
+                            ),)
+                        print('rollout/ep_len_mean', 
+                        safe_mean(
+                                [ep_info["l"] for ep_info in policy.ep_info_buffer]
+                            ),)
                         policy.logger.record(
                             "rollout/ep_rew_mean",
                             safe_mean(
