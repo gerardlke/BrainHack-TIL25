@@ -2,10 +2,10 @@ import time
 from collections import deque
 from typing import Any, Dict, List, Optional, Type, Union
 
-import gym
+import gymnasium as gym
 import numpy as np
 import torch as th
-from gym.spaces import Box, Discrete
+from gymnasium.spaces import Box, Discrete
 from stable_baselines3 import PPO
 from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
 from stable_baselines3.common.policies import ActorCriticPolicy
@@ -84,6 +84,110 @@ class IndependentPPO(OnPolicyAlgorithm):
         ]
 
     def learn(
+        self,
+        total_timesteps: int,
+        callbacks: Optional[List[MaybeCallback]] = None,
+        log_interval: int = 1,
+        tb_log_name: str = "IndependentPPO",
+        reset_num_timesteps: bool = True,
+    ):
+
+        num_timesteps = 0
+        all_total_timesteps = []
+        if not callbacks:
+            callbacks = [None] * self.num_agents
+        self._logger = configure_logger(
+            self.verbose,
+            self.tensorboard_log,
+            tb_log_name,
+            reset_num_timesteps,
+        )
+        logdir = self.logger.dir
+
+        # Setup for each policy
+        for polid, policy in enumerate(self.policies):
+            policy.start_time = time.time()
+            if policy.ep_info_buffer is None or reset_num_timesteps:
+                policy.ep_info_buffer = deque(maxlen=100)
+                policy.ep_success_buffer = deque(maxlen=100)
+
+            if policy.action_noise is not None:
+                policy.action_noise.reset()
+
+            if reset_num_timesteps:
+                policy.num_timesteps = 0
+                policy._episode_num = 0
+                all_total_timesteps.append(total_timesteps)
+                policy._total_timesteps = total_timesteps
+            else:
+                # make sure training timestamps are ahead of internal counter
+                all_total_timesteps.append(total_timesteps + policy.num_timesteps)
+                policy._total_timesteps = total_timesteps + policy.num_timesteps
+
+            policy._logger = configure_logger(
+                policy.verbose,
+                logdir,
+                "policy",
+                reset_num_timesteps,
+            )
+
+            callbacks[polid] = policy._init_callback(callbacks[polid])
+
+        for callback in callbacks:
+            callback.on_training_start(locals(), globals())
+
+        last_obs = self.env.reset()
+        for policy in self.policies:
+            policy._last_episode_starts = np.ones((self.num_envs,), dtype=bool)
+
+        while num_timesteps < total_timesteps:
+            last_obs = self.collect_rollouts(last_obs, callbacks)
+            num_timesteps += self.num_envs * self.n_steps
+            for polid, policy in enumerate(self.policies):
+                policy._update_current_progress_remaining(
+                    policy.num_timesteps, total_timesteps
+                )
+                if log_interval is not None and num_timesteps % log_interval == 0:
+                    fps = int(policy.num_timesteps / (time.time() - policy.start_time))
+                    policy.logger.record("policy_id", polid, exclude="tensorboard")
+                    policy.logger.record(
+                        "time/iterations", num_timesteps, exclude="tensorboard"
+                    )
+                    if (
+                        len(policy.ep_info_buffer) > 0
+                        and len(policy.ep_info_buffer[0]) > 0
+                    ):
+                        policy.logger.record(
+                            "rollout/ep_rew_mean",
+                            safe_mean(
+                                [ep_info["r"] for ep_info in policy.ep_info_buffer]
+                            ),
+                        )
+                        policy.logger.record(
+                            "rollout/ep_len_mean",
+                            safe_mean(
+                                [ep_info["l"] for ep_info in policy.ep_info_buffer]
+                            ),
+                        )
+                    policy.logger.record("time/fps", fps)
+                    policy.logger.record(
+                        "time/time_elapsed",
+                        int(time.time() - policy.start_time),
+                        exclude="tensorboard",
+                    )
+                    policy.logger.record(
+                        "time/total_timesteps",
+                        policy.num_timesteps,
+                        exclude="tensorboard",
+                    )
+                    policy.logger.dump(step=policy.num_timesteps)
+
+                policy.train()
+
+        for callback in callbacks:
+            callback.on_training_end()
+
+    def eval(
         self,
         total_timesteps: int,
         callbacks: Optional[List[MaybeCallback]] = None,

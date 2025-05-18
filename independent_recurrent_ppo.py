@@ -3,7 +3,8 @@ from collections import deque
 from typing import Any, Dict, List, Optional, Type, Union, TypeVar
 from copy import deepcopy
 import gymnasium
-
+from gymnasium import spaces
+from stable_baselines3.common.buffers import DictRolloutBuffer
 import numpy as np
 import torch
 from operator import itemgetter
@@ -194,8 +195,8 @@ class IndependentRecurrentPPO(OnPolicyAlgorithm):
         for polid, policy in enumerate(self.policies):
             policy.start_time = time.time()
             if policy.ep_info_buffer is None or reset_num_timesteps:
-                policy.ep_info_buffer = deque(maxlen=100)
-                policy.ep_success_buffer = deque(maxlen=100)
+                policy.ep_info_buffer = deque(maxlen=policy._stats_window_size)
+                policy.ep_success_buffer = deque(maxlen=policy._stats_window_size)
 
             if policy.action_noise is not None:
                 policy.action_noise.reset()
@@ -226,13 +227,15 @@ class IndependentRecurrentPPO(OnPolicyAlgorithm):
         # self.env returns a dict, where each key is (M * N, ...), M is number of envs, N is number of agents.
         # we determine number of envs based on the output shape (should find a better way to do this)
         reset_obs = self.env.reset()
+        n_rollout_steps = self.n_steps * self.num_envs
 
         while num_timesteps < total_timesteps:
             # environment sampling. has to be done in this particular way because of
             # gridworld's perculiarities
-            rollout_timesteps = self.collect_rollouts(
+            start = time.time()
+            total_rewards, rollout_timesteps = self.collect_rollouts(
                 last_obs=reset_obs,
-                n_rollout_steps=self.n_steps * self.num_envs,  # rollout increments timesteps by number of envs
+                n_rollout_steps=n_rollout_steps,  # rollout increments timesteps by number of envs
                 callbacks=callbacks,
             )
             num_timesteps += rollout_timesteps
@@ -248,30 +251,12 @@ class IndependentRecurrentPPO(OnPolicyAlgorithm):
                     policy.logger.record(
                         "time/iterations", num_timesteps, exclude="tensorboard"
                     )
-                    if (
-                        len(policy.ep_info_buffer) > 0
-                        and len(policy.ep_info_buffer[0]) > 0
-                    ):
-                        print('rollout/ep_rew_mean', 
-                        safe_mean(
-                                [ep_info["r"] for ep_info in policy.ep_info_buffer]
-                            ),)
-                        print('rollout/ep_len_mean', 
-                        safe_mean(
-                                [ep_info["l"] for ep_info in policy.ep_info_buffer]
-                            ),)
-                        policy.logger.record(
-                            "rollout/ep_rew_mean",
-                            safe_mean(
-                                [ep_info["r"] for ep_info in policy.ep_info_buffer]
-                            ),
-                        )
-                        policy.logger.record(
-                            "rollout/ep_len_mean",
-                            safe_mean(
-                                [ep_info["l"] for ep_info in policy.ep_info_buffer]
-                            ),
-                        )
+
+                    print('np.concatenate(total_rewards[polid])', np.concatenate(total_rewards[polid]))
+                    mean_policy_reward = (np.sum(np.concatenate(total_rewards[polid])) / len(total_rewards[polid])).item()
+                    policy.logger.record(
+                        "rollout/mean_policy_reward", mean_policy_reward,
+                    )
                     policy.logger.record("time/fps", fps)
                     policy.logger.record(
                         "time/time_elapsed",
@@ -284,17 +269,131 @@ class IndependentRecurrentPPO(OnPolicyAlgorithm):
                         exclude="tensorboard",
                     )
                     policy.logger.dump(step=policy.num_timesteps)
-
+                start = time.time()
                 policy.train()
+                print(f'------------POLICY {polid} TRAIN TIME-------------')
+                print(time.time() - start)
 
         for callback in callbacks:
             callback.on_training_end()
+
+    def eval(
+        self,
+        total_timesteps: int,
+        log_interval: int = 1,
+        tb_log_name: str = "RecurrentPPO",
+        reset_num_timesteps: bool = True,
+        progress_bar: bool = False,
+    ):
+        """
+        Main eval function. Mainly acts as a wrapper around self.collect_rollouts
+        """
+        print(f'NOTE: TOTAL TIMESTEPS {total_timesteps} INCLUDES NUMBER OF ENVIRONMENTS (currently {self.num_envs}), AND IS NOT A PER-ENV BASIS')
+
+        self._logger = configure_logger(
+            self.verbose,
+            self.tensorboard_log,
+            tb_log_name,
+            reset_num_timesteps,
+        )
+        logdir = self.logger.dir
+
+        # Setup for each policy. Reset things, setup timestep tracking things.
+        # replace certain agent attributes
+        for polid, policy in enumerate(self.policies):
+            policy.start_time = time.time()
+            if policy.ep_info_buffer is None or reset_num_timesteps:
+                policy.ep_info_buffer = deque(maxlen=policy._stats_window_size)
+                policy.ep_success_buffer = deque(maxlen=policy._stats_window_size)
+
+            if policy.action_noise is not None:
+                policy.action_noise.reset()
+
+            if reset_num_timesteps:
+                policy.num_timesteps = 0
+                policy._episode_num = 0
+                policy._total_timesteps = total_timesteps
+            else:
+                # make sure training timestamps are ahead of internal counter
+                policy._total_timesteps = total_timesteps + policy.num_timesteps
+
+            policy._logger = configure_logger(
+                policy.verbose,
+                logdir,
+                f"policy_{polid}",
+                reset_num_timesteps,
+            )
+
+        # self.env returns a dict, where each key is (M * N, ...), M is number of envs, N is number of agents.
+        # we determine number of envs based on the output shape (should find a better way to do this)
+        reset_obs = self.env.reset()
+        n_rollout_steps = total_timesteps * self.num_envs
+        total_rewards = self.collect_rollouts(
+            last_obs=reset_obs,
+            n_rollout_steps=n_rollout_steps,  # rollout increments timesteps by number of envs
+            callbacks=[],
+        )
+        return total_rewards
+
+        # agent training.
+        # for polid, policy in enumerate(self.policies):
+        #     policy._update_current_progress_remaining(
+        #         policy.num_timesteps, total_timesteps  # 
+        #     )
+        #     if log_interval is not None and num_timesteps % log_interval == 0:
+        #         fps = int(policy.num_timesteps / (time.time() - policy.start_time))
+        #         policy.logger.record("polid", polid, exclude="tensorboard")
+        #         policy.logger.record(
+        #             "time/iterations", num_timesteps, exclude="tensorboard"
+        #         )
+        #         if (
+        #             len(policy.ep_info_buffer) > 0
+        #             and len(policy.ep_info_buffer[0]) > 0
+        #         ):
+        #             print('rollout/ep_rew_mean', 
+        #             safe_mean(
+        #                     [ep_info["r"] for ep_info in policy.ep_info_buffer]
+        #                 ),)
+        #             print('rollout/ep_len_mean', 
+        #             safe_mean(
+        #                     [ep_info["l"] for ep_info in policy.ep_info_buffer]
+        #                 ),)
+        #             policy.logger.record(
+        #                 "rollout/ep_rew_mean",
+        #                 safe_mean(
+        #                     [ep_info["r"] for ep_info in policy.ep_info_buffer]
+        #                 ),
+        #             )
+        #             policy.logger.record(
+        #                 "rollout/ep_len_mean",
+        #                 safe_mean(
+        #                     [ep_info["l"] for ep_info in policy.ep_info_buffer]
+        #                 ),
+        #             )
+        #         policy.logger.record("time/fps", fps)
+        #         policy.logger.record(
+        #             "time/time_elapsed",
+        #             int(time.time() - policy.start_time),
+        #             exclude="tensorboard",
+        #         )
+        #         policy.logger.record(
+        #             "time/total_timesteps",
+        #             policy.num_timesteps,
+        #             exclude="tensorboard",
+        #         )
+        #         policy.logger.dump(step=policy.num_timesteps)
+
+            # policy.train()
+
+        # for callback in callbacks:
+        #     callback.on_training_end()
 
     def collect_rollouts(
             self,
             last_obs,
             n_rollout_steps: int,
             callbacks: list = [],
+            eval: bool = False,
         ):
         """
         Helper function to collect rollouts (sample the env and feed observations into the agents, vice versa)
@@ -314,7 +413,6 @@ class IndependentRecurrentPPO(OnPolicyAlgorithm):
         # temporary lists to hold things before saved into history_buffer of agent.
         all_last_episode_starts = [None] * self.num_policies
         all_clipped_actions = [None] * self.num_policies
-        all_next_obs = [None] * self.num_policies
         all_rewards = [None] * self.num_policies
         all_dones = [None] * self.num_policies
         all_infos = [None] * self.num_policies
@@ -322,6 +420,7 @@ class IndependentRecurrentPPO(OnPolicyAlgorithm):
         all_lstm_states = [None] * self.num_policies
         all_values = [None] * self.num_policies
         all_log_probs = [None] * self.num_policies
+        total_rewards = [[] for _ in range(self.num_policies)] 
         
         n_steps = 0
         # before formatted, last_obs is the direct return of self.env.reset()
@@ -329,28 +428,31 @@ class IndependentRecurrentPPO(OnPolicyAlgorithm):
         policy_agent_indexes = self.get_policy_agent_indexes_from_scout(last_obs=last_obs)
         # the boolean mask to apply on each observation, mapping each to each policy.
         # as a sanity check, this should be [1 0 0 0] * self.num_envs since self.env is freshly initialized.
-        last_obs = self.format_env_returns(last_obs, policy_agent_indexes, device=self.policies[0].device)
+        last_obs_buffer = self.format_env_returns(last_obs, policy_agent_indexes, to_tensor=False)
+        last_obs = self.format_env_returns(last_obs, policy_agent_indexes, device=self.policies[0].device, to_tensor=True)
 
         # iterate over policies, and do pre-rollout setups.
+        # start = time.time()
         for polid, (policy, num_envs) in enumerate(zip(self.policies, [self.num_guard_envs, self.num_scout_envs])):
             policy.policy.set_training_mode(False)
             policy.n_steps = 0
             policy.rollout_buffer.reset()
-            policy.ep_info_buffer = deque(maxlen=policy._stats_window_size)
-            policy.ep_success_buffer = deque(maxlen=policy._stats_window_size)
 
             if policy.use_sde:
-                policy.policy.reset_noise(self.num_envs)  # type: ignore[operator]
+                policy.policy.reset_noise(num_envs)  # type: ignore[operator]
 
             [callback.on_rollout_start() for callback in callbacks]
             policy._last_episode_starts = np.ones((num_envs,), dtype=bool)
             all_last_episode_starts[polid] = policy._last_episode_starts
+        # print('------------PRE ROLLOUT TIME-------------')
+        # print(time.time() - start)
 
 
         # do rollout
         while n_steps < n_rollout_steps:
             # print('n_steps', n_steps)
             with torch.no_grad():
+                # start = time.time()
                 for polid, policy in enumerate(self.policies):
 
                     lstm_states = deepcopy(policy._last_lstm_states)
@@ -380,18 +482,25 @@ class IndependentRecurrentPPO(OnPolicyAlgorithm):
                         )
                     # reshape the clipped actions
                     all_clipped_actions[polid] = clipped_actions
+                # print('------------POLICY FORWARD TIME-------------')
+                # print(time.time() - start)
 
             for polid, policy_agent_index in enumerate(policy_agent_indexes):
                 placeholder_actions[policy_agent_index] = all_clipped_actions[polid]
 
+            # start = time.time()
             # actually step in the environment
             obs, rewards, dones, infos = self.env.step(placeholder_actions)
+            # print('rewards', rewards)
             policy_agent_indexes = self.get_policy_agent_indexes_from_scout(last_obs=obs)
-
-            all_curr_obs = self.format_env_returns(obs, policy_agent_indexes=policy_agent_indexes, device=self.policies[0].device)
-            all_rewards = self.format_env_returns(rewards, policy_agent_indexes=policy_agent_indexes, device=self.policies[0].device)
-            all_dones = self.format_env_returns(dones, policy_agent_indexes=policy_agent_indexes, device=self.policies[0].device)
-            all_infos = self.format_env_returns(infos, policy_agent_indexes=policy_agent_indexes, device=self.policies[0].device)
+            # print('policy_agent_indexes', policy_agent_indexes)
+            all_curr_obs = self.format_env_returns(obs, policy_agent_indexes=policy_agent_indexes, to_tensor=True, device=self.policies[0].device)
+            all_curr_obs_buffer = self.format_env_returns(obs, policy_agent_indexes=policy_agent_indexes, to_tensor=False)
+            all_rewards = self.format_env_returns(rewards, policy_agent_indexes=policy_agent_indexes, to_tensor=False)
+            all_dones = self.format_env_returns(dones, policy_agent_indexes=policy_agent_indexes, to_tensor=False)
+            all_infos = self.format_env_returns(infos, policy_agent_indexes=policy_agent_indexes, to_tensor=False)
+            # print('------------STEP FORWARD TIME-------------')
+            # print(time.time() - start)
             # print('all_rewards', all_rewards)
             # apparently handles some timeout issues
             # see GitHub issue #633 of sb3_contrib
@@ -419,11 +528,10 @@ class IndependentRecurrentPPO(OnPolicyAlgorithm):
             for callback in callbacks:
                 callback.update_locals(locals())
             
-            # TODO: find out why this line exists.
-            # if not [callback.on_step() for callback in callbacks]:
-            #     break
-            n_steps += self.num_envs
+            [callback.on_step() for callback in callbacks]
 
+            n_steps += self.num_envs
+            # start = time.time()
             # add data to the rollout buffers
             for polid, policy in enumerate(self.policies):
                 policy._update_info_buffer(all_infos[polid])
@@ -433,7 +541,7 @@ class IndependentRecurrentPPO(OnPolicyAlgorithm):
                     all_actions[polid] = all_actions[polid].cpu().numpy()
                 # all_obs[polid] is a list[dict[str, np.ndarray]], but add only wants per dict. hence this loop
                 policy.rollout_buffer.add(
-                    obs=deepcopy(last_obs[polid]),
+                    obs=deepcopy(last_obs_buffer[polid]),
                     action=deepcopy(all_actions[polid]),
                     reward=deepcopy(all_rewards[polid]),
                     episode_start=deepcopy(policy._last_episode_starts),
@@ -441,9 +549,12 @@ class IndependentRecurrentPPO(OnPolicyAlgorithm):
                     log_prob=deepcopy(all_log_probs[polid]),
                     lstm_states=deepcopy(policy._last_lstm_states)
                 )
-                policy._last_obs = all_curr_obs[polid]
+                policy._last_obs = all_curr_obs_buffer[polid]
                 policy._last_episode_starts = all_dones[polid]
                 policy._last_lstm_states = all_lstm_states[polid]
+                total_rewards[polid].append(all_rewards[polid])
+            # print('------------BUFFER ADDED TIME-------------')
+            # print(time.time() - start)
 
             last_obs = all_curr_obs
             all_last_episode_starts = all_dones
@@ -452,7 +563,7 @@ class IndependentRecurrentPPO(OnPolicyAlgorithm):
         for callback in callbacks:
             callback.on_rollout_end()
 
-        return n_steps
+        return total_rewards, n_steps
 
     def load_policy_id(
         self,
@@ -581,3 +692,4 @@ class IndependentRecurrentPPO(OnPolicyAlgorithm):
             policy_agent_indexes[polid] = np.where(policy_mapping == polid)[0]
 
         return policy_agent_indexes
+    

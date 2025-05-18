@@ -6,35 +6,68 @@ from independent_recurrent_ppo import IndependentRecurrentPPO
 from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 from stable_baselines3.common.env_util import make_vec_env
-
-# from til_environment.stablebaselines_gridworld import build_env
-from til_environment.training_gridworld import env
+import torch
+from stablebaselines_gridworld import build_env
+# from til_environment.training_gridworld import env
 from pettingzoo.utils.conversions import aec_to_parallel
+from til_environment.types import Action, Direction, Player, Tile, Wall
+
 
 from ray import tune
 from ray.tune import Tuner
 from ray.air import session
 from ray.tune.schedulers import PopulationBasedTraining
 
-GLOB_NOVICE = False
+from enum import IntEnum, StrEnum, auto
+class RewardNames(StrEnum):
+    GUARD_WINS = auto()
+    GUARD_CAPTURES = auto()
+    SCOUT_CAPTURED = auto()
+    SCOUT_RECON = auto()
+    SCOUT_MISSION = auto()
+    WALL_COLLISION = auto()
+    AGENT_COLLIDER = auto()
+    AGENT_COLLIDEE = auto()
+    STATIONARY_PENALTY = auto()
+    GUARD_TRUNCATION = auto()
+    SCOUT_TRUNCATION = auto()
+    GUARD_STEP = auto()
+    SCOUT_STEP = auto()
+    SCOUT_STEP_EMPTY_TILE = auto()
+
+REWARDS_DICT = {
+    RewardNames.GUARD_CAPTURES: 500,
+    RewardNames.SCOUT_CAPTURED: -50,
+    RewardNames.SCOUT_RECON: 1,
+    RewardNames.SCOUT_MISSION: 5,
+    RewardNames.WALL_COLLISION: -2,
+    RewardNames.STATIONARY_PENALTY: -2,
+    RewardNames.SCOUT_STEP_EMPTY_TILE: -5,
+}
+GLOB_NUM_ITERS = 200
+GLOB_NOVICE = True
 GLOB_ENV = 'normal'
-EXPERIMENT_NAME = 'adv_rppo_test_normalenv'
+GLOB_DEBUG = True
+EXPERIMENT_NAME = 'novice_rppo_short_normalenv_500iter'
 
 def make_new_vec_gridworld(render_mode=None, env_type='normal', num_vec_envs=1):
     """
     Helper func to build gridworld into a vectorized form. Will also return original AEC env for evaluation too, so dont worry
     """
-    # gridworld = build_env(
-    #     env_type=env_type,
+    gridworld = build_env(
+        env_type=env_type,
+        env_wrappers=[],
+        render_mode=render_mode,
+        rewards_dict=REWARDS_DICT,
+        novice=GLOB_NOVICE,
+        num_iters=GLOB_NUM_ITERS,
+        debug=GLOB_DEBUG,
+    )
+    # gridworld = env(
     #     env_wrappers=[],
     #     render_mode=render_mode,
     #     novice=GLOB_NOVICE,
     # )
-    gridworld = env(
-        env_wrappers=[],
-        render_mode=render_mode,
-        novice=GLOB_NOVICE,
-    )
     gridworld = aec_to_parallel(gridworld)
     vec_env = ss.pettingzoo_env_to_vec_env_v1(gridworld)
     vec_env = ss.concat_vec_envs_v1(vec_env, num_vec_envs=num_vec_envs, num_cpus=6, base_class='stable_baselines3')
@@ -47,8 +80,9 @@ def train(config):
     num_policies = 2
     num_agents = 4
     num_vec_envs = 4
-    gridworld, vec_env = make_new_vec_gridworld(render_mode='human', num_vec_envs=num_vec_envs, env_type=GLOB_ENV)
+    gridworld, vec_env = make_new_vec_gridworld(render_mode='rgb_array', num_vec_envs=num_vec_envs, env_type=GLOB_ENV)
     trial_name = session.get_trial_name()
+    trial_code = trial_name[:-6]
 
     model = IndependentRecurrentPPO(
         "MultiInputLstmPolicy",
@@ -57,19 +91,19 @@ def train(config):
         num_agents=num_agents,
         env=vec_env,
         verbose=1,
-        tensorboard_log=f"/mnt/e/BrainHack-TIL25/rppo_logs/{trial_name}",
+        tensorboard_log=f"/mnt/e/BrainHack-TIL25/rppo_logs/{trial_code}/{trial_name}",
         **config
     )
 
     # TODO: make it multi agent Set where to save the model
     checkpoint_callbacks = [[CheckpointCallback(
-        save_freq=10000,                    # Save every n steps
+        save_freq=100,                    # Save every n steps
         save_path=f"/mnt/e/BrainHack-TIL25/checkpoints/rppo_agent_{i}/{trial_name}",         # Target directory
         name_prefix=f"{EXPERIMENT_NAME}_novice_{GLOB_NOVICE}_run_{trial_name}"
     )] for i in range(num_policies)]
 
     model.learn(
-        total_timesteps=200000, 
+        total_timesteps=100000, 
         callbacks=checkpoint_callbacks)
     
     save_path = f"/mnt/e/BrainHack-TIL25/checkpoints/rppo/{trial_name}/final_rppo_model_for_run_{trial_name}"
@@ -84,28 +118,27 @@ def train(config):
         num_policies=num_policies,
         num_agents=num_agents,
         env=vec_env,
-        n_steps=n_steps,
+        n_steps=100,
         verbose=1,
-        tensorboard_log=f"/mnt/e/BrainHack-TIL25/rppo_logs/{trial_name}",
+        tensorboard_log=f"/mnt/e/BrainHack-TIL25/eval_logs/{trial_name}",
         **config
     )
 
-    reset_obs = vec_env.reset()
     # hijack collect_rollouts function to evaluate for us.
     all_scout_score, all_guard_score = [], []
     num_eval_rounds = 10
     for _ in range(num_eval_rounds):
-        eval_model.collect_rollouts(
-            last_obs=reset_obs,
-            n_rollout_steps=eval_model.n_steps * eval_model.num_envs,  # rollout increments timesteps by number of envs
+        total_rewards = eval_model.eval(
+            total_timesteps=100, 
+            progress_bar=True,
         )
-        
-        scout_pol_rewards = np.sum(model.policies[1].rollout_buffer.rewards) / eval_model.num_scout_envs
-        guard_pol_rewards = np.sum(model.policies[0].rollout_buffer.rewards) / eval_model.num_guard_envs
-        all_scout_score.append(scout_pol_rewards)
-        all_guard_score.append(guard_pol_rewards)
-        print('scout_pol_rewards', scout_pol_rewards)
-        print('guard_pol_rewards', guard_pol_rewards)
+        all_guard_score.append(
+            torch.sum(torch.cat(total_rewards[0]) / len(total_rewards[0]))
+        )
+        all_scout_score.append(
+            torch.sum(torch.cat(total_rewards[1]) / len(total_rewards[1]))
+        )
+        print(all_guard_score, all_scout_score)
 
     mean_scout_score = sum(all_scout_score) / len(all_scout_score)
     mean_guard_score = sum(all_guard_score) / len(all_guard_score)
@@ -141,20 +174,20 @@ if __name__ == "__main__":
         mode="max",
         perturbation_interval=5,  # every n trials
         hyperparam_mutations={
-                "learning_rate": tune.loguniform(1e-5, 1e-3),
-                "gamma": tune.uniform(0.80, 0.999),
-                "n_steps": tune.choice([256, 512, 1024]),
-                "batch_size": tune.choice([64, 128]),
-                "n_epochs": tune.choice([5, 7, 10]),
+                "learning_rate": tune.loguniform(5e-4, 1e-3),
+                "gamma": tune.uniform(0.95, 0.9999),
+                "n_steps": tune.choice([128, 256]),
+                "batch_size": tune.choice([4, 8]),
+                # "n_epochs": tune.choice([5, 7, 10]),
                 "vf_coef": tune.uniform(0.10, 0.80),
-                "ent_coef": tune.loguniform(1e-6, 1e-4),
-                "gae_lambda": tune.uniform(0.70, 0.99),
+                "ent_coef": tune.loguniform(1e-3, 1e-1),
+                "gae_lambda": tune.uniform(0.90, 0.99),
             })
         tuner = Tuner(
-            tune.with_resources(train, resources={"cpu": 6.0, "memory": 8 * 1024 ** 3}),
+            tune.with_resources(train, resources={"cpu": 5.0, "gpu": 1}),
             tune_config=tune.TuneConfig(
                 scheduler=pbt,
-                num_samples=10,
+                num_samples=100,
                 reuse_actors=True,
             ),
         )

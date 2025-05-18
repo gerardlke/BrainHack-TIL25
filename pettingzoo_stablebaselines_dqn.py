@@ -7,194 +7,185 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 from stable_baselines3.common.env_util import make_vec_env
-
-# from til_environment.stablebaselines_gridworld import build_env
-from til_environment.training_gridworld import env
+import torch
+from stablebaselines_gridworld import build_env
+# from til_environment.training_gridworld import env
 from pettingzoo.utils.conversions import aec_to_parallel
-
+from til_environment.types import Action, Direction, Player, RewardNames, Tile, Wall
+from stable_baselines3 import DQN
 from ray import tune
 from ray.tune import Tuner
 from ray.air import session
 from ray.tune.schedulers import PopulationBasedTraining
+from stable_baselines3.common.utils import configure_logger, obs_as_tensor
 
+from enum import IntEnum, StrEnum, auto
+class RewardNames(StrEnum):
+    GUARD_WINS = auto()
+    GUARD_CAPTURES = auto()
+    SCOUT_CAPTURED = auto()
+    SCOUT_RECON = auto()
+    SCOUT_MISSION = auto()
+    WALL_COLLISION = auto()
+    AGENT_COLLIDER = auto()
+    AGENT_COLLIDEE = auto()
+    STATIONARY_PENALTY = auto()
+    GUARD_TRUNCATION = auto()
+    SCOUT_TRUNCATION = auto()
+    GUARD_STEP = auto()
+    SCOUT_STEP = auto()
+    SCOUT_STEP_EMPTY_TILE = auto()
+
+STD_REWARDS_DICT = {
+    RewardNames.GUARD_CAPTURES: 50,
+    RewardNames.SCOUT_CAPTURED: -50,
+    RewardNames.SCOUT_RECON: 1,
+    RewardNames.SCOUT_MISSION: 5,
+    RewardNames.WALL_COLLISION: 0,
+    RewardNames.STATIONARY_PENALTY: 0,
+    RewardNames.SCOUT_STEP_EMPTY_TILE: 0,
+}
+REWARDS_DICT = {
+    RewardNames.GUARD_CAPTURES: 500,
+    RewardNames.SCOUT_CAPTURED: -50,
+    RewardNames.SCOUT_RECON: 1,
+    RewardNames.SCOUT_MISSION: 5,
+    RewardNames.WALL_COLLISION: -5,
+    RewardNames.STATIONARY_PENALTY: -5,
+    RewardNames.SCOUT_STEP_EMPTY_TILE: -5,
+}
+GLOB_NUM_ITERS = 100
 GLOB_NOVICE = True
-GLOB_ENV = 'binary_viewcone'
-EXPERIMENT_NAME = 'novice_long_test_dqn'
+GLOB_ENV = 'normal'
+GLOB_DEBUG = True
+EXPERIMENT_NAME = 'novice_rppo_1mil_normalenv'
 
-def make_new_vec_gridworld(render_mode=None, env_type='normal', num_vec_envs=1):
+def make_new_vec_gridworld(rewards_dict, render_mode=None, env_type='normal', num_vec_envs=1):
     """
     Helper func to build gridworld into a vectorized form. Will also return original AEC env for evaluation too, so dont worry
     """
-    # gridworld = build_env(
-    #     env_type=env_type,
+    gridworld = build_env(
+        env_type=env_type,
+        env_wrappers=[],
+        render_mode=render_mode,
+        novice=GLOB_NOVICE,
+        rewards_dict=rewards_dict,
+        num_iters=GLOB_NUM_ITERS,
+        debug=GLOB_DEBUG,
+    )
+    # gridworld = env(
     #     env_wrappers=[],
     #     render_mode=render_mode,
     #     novice=GLOB_NOVICE,
     # )
-    gridworld = env(
-        env_wrappers=[],
-        render_mode=render_mode,
-        novice=GLOB_NOVICE,
-    )
     gridworld = aec_to_parallel(gridworld)
     vec_env = ss.pettingzoo_env_to_vec_env_v1(gridworld)
     vec_env = ss.concat_vec_envs_v1(vec_env, num_vec_envs=num_vec_envs, num_cpus=2, base_class='stable_baselines3')
 
     return gridworld.aec_env, vec_env
 
-def evaluate(model, num_rounds=10, render_mode='human'):
-    gridworld, vec_env = make_new_vec_gridworld(num_vec_envs=1, env_type=GLOB_ENV)
-    rewards = {agent: 0 for agent in gridworld.possible_agents}
-
-    for _ in range(num_rounds):
-        # environment switches player when reset is called, but we want fixed evaluation
-        # where the first player is always the scout and the others are guards
-        # so just build world from scratch again
-        # gridworld = build_env(
-        #     env_type=GLOB_ENV,
-        #     env_wrappers=[],
-        #     render_mode=render_mode,
-        #     novice=GLOB_NOVICE,
-        # )
-        reset_obs = vec_env.reset()
-
-        for agent_id, agent in enumerate(model.agents):
-            observation, reward, termination, truncation, info = gridworld.env.last()
-            # sample random action or according to policy.
-            action, _ = agent.predict(observation, deterministic=False)
-
-            vstack_clipped_actions = (
-                np.vstack(all_clipped_actions).transpose().reshape(-1)
-            )  # reshape as (env, action)
-
-            # actually step in the environment
-            obs, rewards, dones, infos = self.env.action(vstack_clipped_actions)
-
-            # obs may be a list like the others, or may be a dict, each string key indexing sometensor of shape 
-            all_curr_obs = self.format_env_returns(obs, device=self.agents[0].device)
-            all_rewards = self.format_env_returns(rewards, device=self.agents[0].device)
-            all_dones = self.format_env_returns(dones, device=self.agents[0].device)
-            all_infos = self.format_env_returns(infos, device=self.agents[0].device)
-
-            for policy in self.agents:
-                policy.num_timesteps += self.num_envs
-
-            for callback in callbacks:
-                callback.update_locals(locals())
-            if not [callback.on_step() for callback in callbacks]:
-                break
-
-            for agent_id, agents in enumerate(self.agents):
-                agents._update_info_buffer(all_infos[agent_id])
-
-            num_collected_steps += self.num_envs
-
-            # add data to the replay buffers
-
-            for agent_id, agent in enumerate(self.agents):
-                if isinstance(self.action_space, Discrete):
-                    all_actions[agent_id] = all_actions[agent_id].reshape(-1, 1)
-                if hasattr(all_actions[agent_id], 'cpu'):
-                    all_actions[agent_id] = all_actions[agent_id].cpu().numpy()
-                # all_obs[agent_id] is a list[dict[str, np.ndarray]], but add only wants per dict. hence this loop
-                agent.replay_buffer.add(
-                    obs=deepcopy(last_obs[agent_id]),
-                    next_obs=deepcopy(all_curr_obs[agent_id]),
-                    action=deepcopy(all_buffer_actions[agent_id]),
-                    reward=deepcopy(all_rewards[agent_id]),
-                    done=deepcopy(all_dones[agent_id]),
-                    infos=deepcopy(all_infos[agent_id]),
-                )
-
-            last_obs = all_curr_obs
-            all_last_episode_starts = all_dones
-
-        interm_rewards = {agent: 0 for agent in gridworld.possible_agents}
-        for _, agent in zip(gridworld.agent_iter(), model.agents):
-            
-            observation = {
-                k: v if type(v) is int else v.tolist() for k, v in observation.items()
-            }
-            for a in gridworld.agents:
-                rewards[a] += gridworld.rewards[a]
-                interm_rewards[a] += gridworld.rewards[a]
-            if termination or truncation:
-                action = None
-            else:
-                action, _states = agent.predict(observation, deterministic=False)
-                print('actions???', action)
-            gridworld.step(action)
-        
-        print('intermediate rewards', interm_rewards)
-
-    gridworld.close()
-
-    mean_rewards = {k: v / num_rounds for k, v in rewards.items()}
-
-    return mean_rewards
 
 def train(config):
-
-    gridworld, vec_env = make_new_vec_gridworld(render_mode='rgb_array', num_vec_envs=2, env_type=GLOB_ENV)
+    num_vec_envs = 1
+    gridworld, vec_env = make_new_vec_gridworld(
+        rewards_dict=REWARDS_DICT,
+        render_mode='rgb_array',
+        num_vec_envs=num_vec_envs,
+        env_type=GLOB_ENV)
     trial_name = session.get_trial_name()
-    num_agents = 2
+    num_agents = 4
+    num_policies = 2
 
-    agent_grad_steps = config.pop('agent_grad_steps')
+    policy_grad_steps = config.pop('policy_grad_steps')
 
     model = IndependentDQN(
         "MultiInputPolicy",
         num_agents=num_agents,
+        num_policies=num_policies,
+        buffer_size=int(1e6),
         env=vec_env,
-        learning_starts=100,
-        train_freq=1024,
         verbose=1,
-        tensorboard_log=f"/mnt/e/BrainHack-TIL25/ppo_logs/{trial_name}",
+        tensorboard_log=f"/mnt/e/BrainHack-TIL25/dqn_logs/{trial_name}",
         **config
     )
 
     # TODO: make it multi agent Set where to save the model
     checkpoint_callbacks = [[CheckpointCallback(
-        save_freq=10000,                    # Save every n steps
+        save_freq=1000,                    # Save every n steps
         save_path=f"/mnt/e/BrainHack-TIL25/checkpoints/dqn_agent_{i}/{trial_name}",         # Target directory
         name_prefix=f"{EXPERIMENT_NAME}_novice_{GLOB_NOVICE}_run_{trial_name}"
-    )] for i in range(num_agents)]
+    )] for i in range(num_policies)]
+
+    # test out loading before running learn
+    save_path = "/mnt/e/BrainHack-TIL25/checkpoints/dqn/train_e0d1b_00000/final_dqn_model_for_run_train_e0d1b_00000"
+    model = IndependentDQN.load(
+        policy="MultiInputPolicy",
+        path=save_path,
+        # learning_starts=0,
+        num_policies=num_policies,
+        buffer_size=int(1e5),
+        num_agents=num_agents,
+        env=vec_env,
+        # train_freq=100 * 1,
+        verbose=1,
+        tensorboard_log=f"/mnt/e/BrainHack-TIL25/eval_logs/{trial_name}",
+        **config
+    )
 
     model.learn(
-        agent_grad_steps=agent_grad_steps,
-        total_timesteps=1000, 
+        policy_grad_steps=policy_grad_steps,
+        total_timesteps=1000000, 
         callbacks=checkpoint_callbacks)
-    print('rewards:', np.unique(model.agents[0].replay_buffer.rewards, return_counts=True))
-    print('replay buff pos', model.agents[0].replay_buffer.pos)
+    # print('guards rewards:', np.unique(model.policies[0].replay_buffer.rewards, return_counts=True))
+    # print('scout rewards:', np.unique(model.policies[1].replay_buffer.rewards, return_counts=True))
 
-    model.save(f"/mnt/e/BrainHack-TIL25/checkpoints/ppo/{trial_name}/final_ppo_model_for_run_{trial_name}")
+    save_path = f"/mnt/e/BrainHack-TIL25/checkpoints/dqn/{trial_name}/final_dqn_model_for_run_{trial_name}"
+    model.save(save_path)
 
     # .load instantiates a new instance of the model. This is to simulate how you would run inference for this model.
     # instantiate the model, and do rollouts without action noise or randomness or sampling from replay buffer.
-    gridworld, vec_env = make_new_vec_gridworld(render_mode='rgb_array', num_vec_envs=1, env_type=GLOB_ENV)
+    gridworld, vec_env = make_new_vec_gridworld(
+        rewards_dict=STD_REWARDS_DICT,
+        render_mode=None,
+        num_vec_envs=1,
+        env_type=GLOB_ENV
+    )
+    config.pop('learning_starts')
+    config.pop('train_freq')
     eval_model = IndependentDQN.load(
         policy="MultiInputPolicy",
-        path=f"/mnt/e/BrainHack-TIL25/checkpoints/ppo/{trial_name}/final_ppo_model_for_run_{trial_name}",
+        path=save_path,
+        learning_starts=0,
+        num_policies=num_policies,
+        buffer_size=int(1e5),
         num_agents=num_agents,
-        train_freq=(100, 'episode'),  # we arent training, we're just running for 100 rounds before stopping rollout.
-        learning_starts=0,  # no random sampling of action space
         env=vec_env,
+        train_freq=100 * 1,
+        verbose=1,
+        tensorboard_log=f"/mnt/e/BrainHack-TIL25/eval_logs/{trial_name}",
+        print_system_info=True,
+        **config
     )
 
-    reset_obs = vec_env.reset()
     # hijack collect_rollouts function to evaluate for us.
-    eval_model.collect_rollouts(
-        last_obs=reset_obs,
-        train_freq=eval_model.train_freq,
-        learning_starts=eval_model.learning_starts,
-        run_on_step=False,
-    )
-    
-    print('rewards:', np.unique(eval_model.agents[0].replay_buffer.rewards))
-    
-    # results_dict = evaluate(model, num_rounds=100, render_mode=None)
-    mean_all_score = sum(results_dict.values()) / 4
-    mean_scout_score = results_dict.pop('player_0')
-    mean_guard_score = sum(results_dict.values()) / 3
+    all_scout_score, all_guard_score = [], []
+    num_eval_rounds = 10
+    for _ in range(num_eval_rounds):
+        total_rewards = eval_model.eval(
+            total_timesteps=100, 
+            progress_bar=True,
+        )
+        all_guard_score.append(
+            (np.sum(np.concatenate(total_rewards[0])) / len(total_rewards[0])).item()
+        )
+        all_scout_score.append(
+            (np.sum(np.concatenate(total_rewards[1])) / len(total_rewards[1])).item()
+        )
+        print(all_guard_score, all_scout_score)
+
+    mean_scout_score = sum(all_scout_score) / len(all_scout_score)
+    mean_guard_score = sum(all_guard_score) / len(all_guard_score)
+    mean_all_score = (mean_scout_score +  mean_guard_score) / 2
 
     tune.report(
         dict(
@@ -222,24 +213,23 @@ if __name__ == "__main__":
         time_attr="training_iteration",
         metric="mean_all_score",
         mode="max",
-        perturbation_interval=5,  # every n trials
+        perturbation_interval=10,  # every n trials
         hyperparam_mutations={
-                "learning_rate": tune.loguniform(1e-5, 1e-2),
-                "agent_grad_steps": tune.choice([256, 512, 1024]),
-                # "gamma": tune.uniform(0.80, 0.999),
-                # "n_steps": tune.choice([256, 512, 1024]),
-                # "batch_size": tune.choice([64, 128]),
-                # "n_epochs": tune.choice([5, 7, 10]),
-                # "vf_coef": tune.uniform(0.10, 0.80),
-                # "ent_coef": tune.loguniform(1e-6, 1e-4),
-                # "gae_lambda": tune.uniform(0.70, 0.99),
+                "learning_rate": tune.loguniform(1e-5, 1e-3),
+                "policy_grad_steps": tune.choice([256, 512, 1024]),
+                "gamma": tune.uniform(0.95, 0.999),
+                "batch_size": tune.choice([64, 128]),
+                "learning_starts": tune.choice([100, 200, 400]),
+                "train_freq": tune.choice([1000, 2000]),
+                "exploration_fraction": tune.uniform(0.40, 0.80)
             })
         tuner = Tuner(
-            tune.with_resources(train, resources={"cpu": 2.0, "memory": 4 * 1024 ** 3}),
+            tune.with_resources(train, resources={"cpu": 2.0}),
             tune_config=tune.TuneConfig(
                 scheduler=pbt,
-                num_samples=1,
+                num_samples=100,
                 reuse_actors=True,
+                max_concurrent_trials=1,
             ),
         )
 
@@ -266,19 +256,111 @@ if __name__ == "__main__":
         # )
 
     else:
-        model = PPO.load(args.ckpt)
-        # gridworld = build_env(
-        #     env_type=GLOB_ENV,
-        #     env_wrappers=[],
-        #     render_mode='human',
-        #     novice=False,
-        # )
-        gridworld = env(
-            env_wrappers=[],
-            render_mode=render_mode,
-            novice=GLOB_NOVICE,
+        gridworld, vec_env = make_new_vec_gridworld(
+            rewards_dict=REWARDS_DICT,
+            render_mode='human',
+            num_vec_envs=1,
+            env_type=GLOB_ENV
+        )
+        save_path = "/mnt/e/BrainHack-TIL25/checkpoints/dqn/train_e0d1b_00000/final_dqn_model_for_run_train_e0d1b_00000"
+        eval_model = IndependentDQN.load(
+            policy="MultiInputPolicy",
+            path=save_path,
+            learning_starts=0,
+            num_policies=2,
+            buffer_size=int(1e5),
+            num_agents=4,
+            env=vec_env,
+            train_freq=100 * 1,
+            verbose=1,
+            device='cpu',
         )
 
-        evaluate(model, gridworld.possible_agents, num_rounds=10, render_mode='human')
-        
+        # hijack collect_rollouts function to evaluate for us.
+        all_scout_score, all_guard_score = [], []
+        num_eval_rounds = 10
+        for _ in range(num_eval_rounds):
+            total_rewards = eval_model.eval(
+                total_timesteps=100, 
+                progress_bar=True,
+            )
+            all_guard_score.append(
+                (np.sum(np.concatenate(total_rewards[0])) / len(total_rewards[0])).item()
+            )
+            all_scout_score.append(
+                (np.sum(np.concatenate(total_rewards[1])) / len(total_rewards[1])).item()
+            )
+            print(all_guard_score, all_scout_score)
 
+        mean_scout_score = sum(all_scout_score) / len(all_scout_score)
+        mean_guard_score = sum(all_guard_score) / len(all_guard_score)
+        mean_all_score = (mean_scout_score +  mean_guard_score) / 2
+        esfgzrfdthyvjb
+
+        eval_scout = DQN.load(
+                policy="MultiInputPolicy",
+                path=save_path + f"/policy_{1}/model",
+                env=vec_env,
+                learning_starts=0,
+                train_freq=100,
+            )
+        eval_guard = DQN.load(
+                policy="MultiInputPolicy",
+                path=save_path + f"/policy_{0}/model",
+                env=vec_env,
+                learning_starts=0,
+                train_freq=100,
+            )
+        # test out pre-rollout setup?
+        for polid, policy in enumerate([eval_guard, eval_scout]):
+            policy.policy.set_training_mode(False)
+
+            if policy.use_sde:
+                policy.actor.reset_noise(1)  # type: ignore[operator]
+
+        NUM_ROUNDS = 8
+        for _ in range(NUM_ROUNDS):
+            gridworld.reset()
+            rewards = {agent: 0 for agent in gridworld.possible_agents}
+
+            for agent in gridworld.agent_iter():
+                observation, reward, termination, truncation, info = gridworld.last()
+                print('observation before', observation)
+                observation['direction'] = np.array(observation['direction'])
+                observation['scout'] = np.array(observation['scout'])
+                observation['step'] = np.array(observation['step'])
+                
+                observation = {
+                    k: obs_as_tensor(v, device='cpu') for k, v in observation.items()
+                }
+                print('observation after', observation)
+
+                for a in gridworld.agents:
+                    rewards[a] += gridworld.rewards[a]
+
+                if termination or truncation:
+                    action = None
+                elif observation['scout'] == 1:
+                    # run scout model
+                    action, _ = eval_scout.predict(observation, deterministic=False)
+                    print('scout action', action)
+                elif observation['scout'] == 0:
+                    action, _ = eval_guard.predict(observation, deterministic=False)
+                    print('guard action', action)
+
+                print(action)
+                gridworld.step(action)
+
+        gridworld.close()
+        print(f"total rewards: {rewards}")
+
+
+
+# from default api
+# observation {'viewcone': array([[  0,   0,   0,   0,  67],
+#        [  0,   0, 226, 162,   0],
+#        [  0,   0, 155,  50,   0],
+#        [  0,   0,   0,   0,   0],
+#        [  0,   0,   0,   0,   0],
+#        [  0,   0,   0,   0,   0],
+#        [  0,   0,   0,   0,   0]], dtype=uint8), 'direction': np.int64(3), 'location': array([1, 8]), 'scout': 0, 'step': 21
