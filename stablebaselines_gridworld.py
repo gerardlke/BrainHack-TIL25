@@ -98,6 +98,9 @@ class RewardNames(StrEnum):
     GUARD_STEP = auto()
     SCOUT_STEP = auto()
     SCOUT_STEP_EMPTY_TILE = auto()
+    LOOKING = auto()
+    FORWARD = auto()
+    BACKWARD = auto()
 
 REWARDS_DICT = {
     RewardNames.GUARD_CAPTURES: 500,
@@ -105,8 +108,11 @@ REWARDS_DICT = {
     RewardNames.SCOUT_RECON: 1,
     RewardNames.SCOUT_MISSION: 5,
     RewardNames.WALL_COLLISION: -2,
-    RewardNames.STATIONARY_PENALTY: -2,
-    RewardNames.SCOUT_STEP_EMPTY_TILE: -5,
+    RewardNames.STATIONARY_PENALTY: -0.5,
+    RewardNames.SCOUT_STEP_EMPTY_TILE: -0.25,
+    RewardNames.LOOKING:-0.25,
+    RewardNames.FORWARD:0.5,
+    RewardNames.BACKWARD:0.5,
 }
 
 class normal_env(raw_env):
@@ -302,16 +308,19 @@ class normal_env(raw_env):
             self.agent_directions[agent] = (
                 self.agent_directions[agent] + (3 if _action is Action.LEFT else 1)
             ) % 4
+            self.rewards[agent] += self.rewards_dict.get(
+                RewardNames.LOOKING, 0
+            )
         if _action is (Action.STAY):
             # apply stationary penalty
             self.rewards[agent] += self.rewards_dict.get(
                 RewardNames.STATIONARY_PENALTY, 0
             )
-        # if agent != self.scout:
-        #     # we now give guards negative rewards, based on their distance to the scout
-        #     distance = self.get_info(agent)['euclidean']
-        #     # negative of distance as reward increment? 
-        #     self.rewards[agent] += -distance / 5  # probably divide it so the poor guard doesnt explode
+        if agent != self.scout:
+            # we now give guards negative rewards, based on their distance to the scout
+            distance = self.get_info(agent)['euclidean']
+            # negative of distance as reward increment? 
+            self.rewards[agent] += -distance / 5  # probably divide it so the poor guard doesnt explode
 
         return None
     

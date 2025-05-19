@@ -241,10 +241,10 @@ class IndependentDQN(OffPolicyAlgorithm):
                     policy.logger.record(
                         "time/iterations", num_timesteps, exclude="tensorboard"
                     )
-                    print(f'np.concatenate(total_rewards[{polid}])')
-                    print(
-                          np.unique(np.concatenate(total_rewards[polid]), return_counts=True)
-                    )
+                    # print(f'np.concatenate(total_rewards[{polid}])')
+                    # print(
+                    #       np.unique(np.concatenate(total_rewards[polid]))
+                    # )
                     mean_policy_reward = (np.sum(np.concatenate(total_rewards[polid])) / len(total_rewards[polid])).item()
                     policy.logger.record(
                         "rollout/mean_policy_reward", mean_policy_reward,
@@ -413,6 +413,7 @@ class IndependentDQN(OffPolicyAlgorithm):
 
             for callback in callbacks:
                 callback.update_locals(locals())
+            [callback.on_step() for callback in callbacks]
             # for callback in callbacks:
             #     print('callback.on_step()', callback.on_step)
             # if not [callback.on_step() for callback in callbacks]:
@@ -534,7 +535,7 @@ class IndependentDQN(OffPolicyAlgorithm):
             # we assume that the policy uses tanh to scale the action
             # We use non-deterministic action in the case of SAC, for TD3, it does not matter
             # print('obs??', obs)
-            unscaled_action, _ = agent.predict('obs', deterministic=False)
+            unscaled_action, _ = agent.predict(obs, deterministic=False)
 
         # Rescale the action from [low, high] to [-1, 1]
         if isinstance(agent.action_space, spaces.Box):

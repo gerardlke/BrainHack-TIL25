@@ -35,6 +35,9 @@ class RewardNames(StrEnum):
     GUARD_STEP = auto()
     SCOUT_STEP = auto()
     SCOUT_STEP_EMPTY_TILE = auto()
+    LOOKING = auto()
+    FORWARD = auto()
+    BACKWARD = auto()
 
 STD_REWARDS_DICT = {
     RewardNames.GUARD_CAPTURES: 50,
@@ -50,15 +53,18 @@ REWARDS_DICT = {
     RewardNames.SCOUT_CAPTURED: -50,
     RewardNames.SCOUT_RECON: 1,
     RewardNames.SCOUT_MISSION: 5,
-    RewardNames.WALL_COLLISION: -5,
-    RewardNames.STATIONARY_PENALTY: -5,
-    RewardNames.SCOUT_STEP_EMPTY_TILE: -5,
+    RewardNames.WALL_COLLISION: -2,
+    RewardNames.STATIONARY_PENALTY: -0.5,
+    RewardNames.SCOUT_STEP_EMPTY_TILE: -0.25,
+    RewardNames.LOOKING:-0.25,
+    RewardNames.FORWARD:0.5,
+    RewardNames.BACKWARD:0.5,
 }
-GLOB_NUM_ITERS = 100
+GLOB_NUM_ITERS = 300
 GLOB_NOVICE = True
 GLOB_ENV = 'normal'
 GLOB_DEBUG = True
-EXPERIMENT_NAME = 'novice_rppo_1mil_normalenv'
+EXPERIMENT_NAME = 'novice_dqn_long_normalenv'
 
 def make_new_vec_gridworld(rewards_dict, render_mode=None, env_type='normal', num_vec_envs=1):
     """
@@ -117,24 +123,24 @@ def train(config):
     )] for i in range(num_policies)]
 
     # test out loading before running learn
-    save_path = "/mnt/e/BrainHack-TIL25/checkpoints/dqn/train_e0d1b_00000/final_dqn_model_for_run_train_e0d1b_00000"
-    model = IndependentDQN.load(
-        policy="MultiInputPolicy",
-        path=save_path,
-        # learning_starts=0,
-        num_policies=num_policies,
-        buffer_size=int(1e5),
-        num_agents=num_agents,
-        env=vec_env,
-        # train_freq=100 * 1,
-        verbose=1,
-        tensorboard_log=f"/mnt/e/BrainHack-TIL25/eval_logs/{trial_name}",
-        **config
-    )
+    # save_path = "/mnt/e/BrainHack-TIL25/checkpoints/dqn/train_e0d1b_00000/final_dqn_model_for_run_train_e0d1b_00000"
+    # model = IndependentDQN.load(
+    #     policy="MultiInputPolicy",
+    #     path=save_path,
+    #     # learning_starts=0,
+    #     num_policies=num_policies,
+    #     buffer_size=int(1e5),
+    #     num_agents=num_agents,
+    #     env=vec_env,
+    #     # train_freq=100 * 1,
+    #     verbose=1,
+    #     tensorboard_log=f"/mnt/e/BrainHack-TIL25/eval_logs/{trial_name}",
+    #     **config
+    # )
 
     model.learn(
         policy_grad_steps=policy_grad_steps,
-        total_timesteps=1000000, 
+        total_timesteps=5000000, 
         callbacks=checkpoint_callbacks)
     # print('guards rewards:', np.unique(model.policies[0].replay_buffer.rewards, return_counts=True))
     # print('scout rewards:', np.unique(model.policies[1].replay_buffer.rewards, return_counts=True))
@@ -144,34 +150,18 @@ def train(config):
 
     # .load instantiates a new instance of the model. This is to simulate how you would run inference for this model.
     # instantiate the model, and do rollouts without action noise or randomness or sampling from replay buffer.
-    gridworld, vec_env = make_new_vec_gridworld(
-        rewards_dict=STD_REWARDS_DICT,
-        render_mode=None,
-        num_vec_envs=1,
-        env_type=GLOB_ENV
-    )
-    config.pop('learning_starts')
-    config.pop('train_freq')
-    eval_model = IndependentDQN.load(
-        policy="MultiInputPolicy",
-        path=save_path,
-        learning_starts=0,
-        num_policies=num_policies,
-        buffer_size=int(1e5),
-        num_agents=num_agents,
-        env=vec_env,
-        train_freq=100 * 1,
-        verbose=1,
-        tensorboard_log=f"/mnt/e/BrainHack-TIL25/eval_logs/{trial_name}",
-        print_system_info=True,
-        **config
-    )
+    # gridworld, vec_env = make_new_vec_gridworld(
+    #     rewards_dict=STD_REWARDS_DICT,
+    #     render_mode=None,
+    #     num_vec_envs=1,
+    #     env_type=GLOB_ENV
+    # )
 
     # hijack collect_rollouts function to evaluate for us.
     all_scout_score, all_guard_score = [], []
     num_eval_rounds = 10
     for _ in range(num_eval_rounds):
-        total_rewards = eval_model.eval(
+        total_rewards = model.eval(
             total_timesteps=100, 
             progress_bar=True,
         )
@@ -219,12 +209,12 @@ if __name__ == "__main__":
                 "policy_grad_steps": tune.choice([256, 512, 1024]),
                 "gamma": tune.uniform(0.95, 0.999),
                 "batch_size": tune.choice([64, 128]),
-                "learning_starts": tune.choice([100, 200, 400]),
+                "learning_starts": tune.choice([1000, 2000, 4000]),
                 "train_freq": tune.choice([1000, 2000]),
-                "exploration_fraction": tune.uniform(0.40, 0.80)
+                "exploration_fraction": tune.uniform(0.60, 0.90)
             })
         tuner = Tuner(
-            tune.with_resources(train, resources={"cpu": 2.0}),
+            tune.with_resources(train, resources={"cpu": 6.0}),
             tune_config=tune.TuneConfig(
                 scheduler=pbt,
                 num_samples=100,
@@ -262,51 +252,51 @@ if __name__ == "__main__":
             num_vec_envs=1,
             env_type=GLOB_ENV
         )
-        save_path = "/mnt/e/BrainHack-TIL25/checkpoints/dqn/train_e0d1b_00000/final_dqn_model_for_run_train_e0d1b_00000"
-        eval_model = IndependentDQN.load(
-            policy="MultiInputPolicy",
-            path=save_path,
-            learning_starts=0,
-            num_policies=2,
-            buffer_size=int(1e5),
-            num_agents=4,
-            env=vec_env,
-            train_freq=100 * 1,
-            verbose=1,
-            device='cpu',
-        )
+        # save_path = "/mnt/e/BrainHack-TIL25/checkpoints/dqn/train_e24cc_00000/final_dqn_model_for_run_train_e24cc_00000"
+        # eval_model = IndependentDQN.load(
+        #     policy="MultiInputPolicy",
+        #     path=save_path,
+        #     learning_starts=0,
+        #     num_policies=2,
+        #     buffer_size=int(1e5),
+        #     num_agents=4,
+        #     env=vec_env,
+        #     train_freq=100 * 1,
+        #     verbose=1,
+        #     device='cpu',
+        # )
 
-        # hijack collect_rollouts function to evaluate for us.
-        all_scout_score, all_guard_score = [], []
-        num_eval_rounds = 10
-        for _ in range(num_eval_rounds):
-            total_rewards = eval_model.eval(
-                total_timesteps=100, 
-                progress_bar=True,
-            )
-            all_guard_score.append(
-                (np.sum(np.concatenate(total_rewards[0])) / len(total_rewards[0])).item()
-            )
-            all_scout_score.append(
-                (np.sum(np.concatenate(total_rewards[1])) / len(total_rewards[1])).item()
-            )
-            print(all_guard_score, all_scout_score)
+        # # hijack collect_rollouts function to evaluate for us.
+        # all_scout_score, all_guard_score = [], []
+        # num_eval_rounds = 10
+        # for _ in range(num_eval_rounds):
+        #     total_rewards = eval_model.eval(
+        #         total_timesteps=100, 
+        #         progress_bar=True,
+        #     )
+        #     all_guard_score.append(
+        #         (np.sum(np.concatenate(total_rewards[0])) / len(total_rewards[0])).item()
+        #     )
+        #     all_scout_score.append(
+        #         (np.sum(np.concatenate(total_rewards[1])) / len(total_rewards[1])).item()
+        #     )
+        #     print(all_guard_score, all_scout_score)
 
-        mean_scout_score = sum(all_scout_score) / len(all_scout_score)
-        mean_guard_score = sum(all_guard_score) / len(all_guard_score)
-        mean_all_score = (mean_scout_score +  mean_guard_score) / 2
-        esfgzrfdthyvjb
-
+        # mean_scout_score = sum(all_scout_score) / len(all_scout_score)
+        # mean_guard_score = sum(all_guard_score) / len(all_guard_score)
+        # mean_all_score = (mean_scout_score +  mean_guard_score) / 2
+        # esfgzrfdthyvjb
+        save_path = "/mnt/e/BrainHack-TIL25/checkpoints/dqn_agent_0/train_e24cc_00000/novice_dqn_long_normalenv_novice_True_run_train_e24cc_00000_100000_steps"
         eval_scout = DQN.load(
                 policy="MultiInputPolicy",
-                path=save_path + f"/policy_{1}/model",
+                path= "/mnt/e/BrainHack-TIL25/checkpoints/dqn_agent_0/train_e24cc_00000/novice_dqn_long_normalenv_novice_True_run_train_e24cc_00000_100000_steps",
                 env=vec_env,
                 learning_starts=0,
                 train_freq=100,
             )
         eval_guard = DQN.load(
                 policy="MultiInputPolicy",
-                path=save_path + f"/policy_{0}/model",
+                path= "/mnt/e/BrainHack-TIL25/checkpoints/dqn_agent_1/train_e24cc_00000/novice_dqn_long_normalenv_novice_True_run_train_e24cc_00000_100000_steps",
                 env=vec_env,
                 learning_starts=0,
                 train_freq=100,
