@@ -20,7 +20,7 @@ from ray.tune.schedulers import PopulationBasedTraining
 from stable_baselines3.common.utils import configure_logger, obs_as_tensor
 
 from enum import IntEnum, StrEnum, auto
-class RewardNames(StrEnum):
+class CustomRewardNames(StrEnum):
     GUARD_WINS = auto()
     GUARD_CAPTURES = auto()
     SCOUT_CAPTURED = auto()
@@ -37,30 +37,39 @@ class RewardNames(StrEnum):
     SCOUT_STEP_EMPTY_TILE = auto()
 
 STD_REWARDS_DICT = {
-    RewardNames.GUARD_CAPTURES: 50,
-    RewardNames.SCOUT_CAPTURED: -50,
-    RewardNames.SCOUT_RECON: 1,
-    RewardNames.SCOUT_MISSION: 5,
-    RewardNames.WALL_COLLISION: 0,
-    RewardNames.STATIONARY_PENALTY: 0,
-    RewardNames.SCOUT_STEP_EMPTY_TILE: 0,
+    CustomRewardNames.GUARD_CAPTURES: 50,
+    CustomRewardNames.SCOUT_CAPTURED: -50,
+    CustomRewardNames.SCOUT_RECON: 1,
+    CustomRewardNames.SCOUT_MISSION: 5,
+    CustomRewardNames.WALL_COLLISION: 0,
+    CustomRewardNames.STATIONARY_PENALTY: 0,
+    CustomRewardNames.SCOUT_STEP_EMPTY_TILE: 0,
 }
 REWARDS_DICT = {
-    RewardNames.GUARD_CAPTURES: 500,
-    RewardNames.SCOUT_CAPTURED: -50,
-    RewardNames.SCOUT_RECON: 1,
-    RewardNames.SCOUT_MISSION: 5,
-    RewardNames.WALL_COLLISION: -5,
-    RewardNames.STATIONARY_PENALTY: -5,
-    RewardNames.SCOUT_STEP_EMPTY_TILE: -5,
+    CustomRewardNames.GUARD_CAPTURES: 500,
+    CustomRewardNames.SCOUT_CAPTURED: -50,
+    CustomRewardNames.SCOUT_RECON: 1,
+    CustomRewardNames.SCOUT_MISSION: 5,
+    CustomRewardNames.WALL_COLLISION: -0.5,
+    CustomRewardNames.STATIONARY_PENALTY: -0.5,
+    CustomRewardNames.SCOUT_STEP_EMPTY_TILE: -0.5,
 }
 GLOB_NUM_ITERS = 100
 GLOB_NOVICE = True
 GLOB_ENV = 'normal'
-GLOB_DEBUG = True
+GLOB_DEBUG = False
 EXPERIMENT_NAME = 'novice_rppo_1mil_normalenv'
 
-def make_new_vec_gridworld(rewards_dict, render_mode=None, env_type='normal', num_vec_envs=1):
+
+def make_new_vec_gridworld(
+    rewards_dict,
+    reward_names,
+    render_mode=None,
+    env_type='normal',
+    num_vec_envs=1,
+    frame_stack_size=4,
+    num_iters=GLOB_NUM_ITERS,
+    ):
     """
     Helper func to build gridworld into a vectorized form. Will also return original AEC env for evaluation too, so dont worry
     """
@@ -70,28 +79,29 @@ def make_new_vec_gridworld(rewards_dict, render_mode=None, env_type='normal', nu
         render_mode=render_mode,
         novice=GLOB_NOVICE,
         rewards_dict=rewards_dict,
-        num_iters=GLOB_NUM_ITERS,
+        reward_names=reward_names,
+        num_iters=num_iters,
         debug=GLOB_DEBUG,
     )
-    # gridworld = env(
-    #     env_wrappers=[],
-    #     render_mode=render_mode,
-    #     novice=GLOB_NOVICE,
-    # )
-    gridworld = aec_to_parallel(gridworld)
-    vec_env = ss.pettingzoo_env_to_vec_env_v1(gridworld)
+
+    parallel_gridworld = aec_to_parallel(gridworld)
+    frame_stack = ss.frame_stack_v1(parallel_gridworld, stack_size=frame_stack_size, stack_dim=0)
+    vec_env = ss.pettingzoo_env_to_vec_env_v1(frame_stack)
     vec_env = ss.concat_vec_envs_v1(vec_env, num_vec_envs=num_vec_envs, num_cpus=2, base_class='stable_baselines3')
 
-    return gridworld.aec_env, vec_env
+    return gridworld, vec_env
 
 
 def train(config):
-    num_vec_envs = 1
+    num_vec_envs = 4
     gridworld, vec_env = make_new_vec_gridworld(
+        reward_names=CustomRewardNames,
         rewards_dict=REWARDS_DICT,
         render_mode='rgb_array',
         num_vec_envs=num_vec_envs,
-        env_type=GLOB_ENV)
+        env_type=GLOB_ENV,
+        frame_stack_size=16,)
+
     trial_name = session.get_trial_name()
     num_agents = 4
     num_policies = 2
@@ -99,7 +109,7 @@ def train(config):
     policy_grad_steps = config.pop('policy_grad_steps')
 
     model = IndependentDQN(
-        "MultiInputPolicy",
+        policy="MlpPolicy",
         num_agents=num_agents,
         num_policies=num_policies,
         buffer_size=int(1e6),
@@ -117,21 +127,21 @@ def train(config):
     )] for i in range(num_policies)]
 
     # test out loading before running learn
-    save_path = "/mnt/e/BrainHack-TIL25/checkpoints/dqn/train_e0d1b_00000/final_dqn_model_for_run_train_e0d1b_00000"
-    model = IndependentDQN.load(
-        policy="MultiInputPolicy",
-        path=save_path,
-        # learning_starts=0,
-        num_policies=num_policies,
-        buffer_size=int(1e5),
-        num_agents=num_agents,
-        env=vec_env,
-        # train_freq=100 * 1,
-        verbose=1,
-        tensorboard_log=f"/mnt/e/BrainHack-TIL25/eval_logs/{trial_name}",
-        **config
-    )
-
+    # save_path = "/mnt/e/BrainHack-TIL25/checkpoints/dqn/train_e0d1b_00000/final_dqn_model_for_run_train_e0d1b_00000"
+    # model = IndependentDQN.load(
+    #     policy="MultiInputPolicy",
+    #     path=save_path,
+    #     # learning_starts=0,
+    #     num_policies=num_policies,
+    #     buffer_size=int(1e5),
+    #     num_agents=num_agents,
+    #     env=vec_env,
+    #     # train_freq=100 * 1,
+    #     verbose=1,
+    #     tensorboard_log=f"/mnt/e/BrainHack-TIL25/eval_logs/{trial_name}",
+    #     **config
+    # )
+    
     model.learn(
         policy_grad_steps=policy_grad_steps,
         total_timesteps=1000000, 
@@ -145,15 +155,18 @@ def train(config):
     # .load instantiates a new instance of the model. This is to simulate how you would run inference for this model.
     # instantiate the model, and do rollouts without action noise or randomness or sampling from replay buffer.
     gridworld, vec_env = make_new_vec_gridworld(
+        reward_names=CustomRewardNames,
         rewards_dict=STD_REWARDS_DICT,
-        render_mode=None,
-        num_vec_envs=1,
-        env_type=GLOB_ENV
+        render_mode='rgb_array',
+        num_vec_envs=num_vec_envs,
+        env_type=GLOB_ENV,
+        frame_stack_size=16,
+        num_iters=100,
     )
     config.pop('learning_starts')
     config.pop('train_freq')
     eval_model = IndependentDQN.load(
-        policy="MultiInputPolicy",
+        policy="MlpPolicy",
         path=save_path,
         learning_starts=0,
         num_policies=num_policies,
@@ -163,18 +176,19 @@ def train(config):
         train_freq=100 * 1,
         verbose=1,
         tensorboard_log=f"/mnt/e/BrainHack-TIL25/eval_logs/{trial_name}",
-        print_system_info=True,
         **config
     )
 
     # hijack collect_rollouts function to evaluate for us.
     all_scout_score, all_guard_score = [], []
     num_eval_rounds = 10
+    print('--------------------------IN EVAL--------------------------------')
     for _ in range(num_eval_rounds):
         total_rewards = eval_model.eval(
             total_timesteps=100, 
             progress_bar=True,
         )
+        # print('total_rewards', total_rewards)
         all_guard_score.append(
             (np.sum(np.concatenate(total_rewards[0])) / len(total_rewards[0])).item()
         )
@@ -227,7 +241,7 @@ if __name__ == "__main__":
             tune.with_resources(train, resources={"cpu": 2.0}),
             tune_config=tune.TuneConfig(
                 scheduler=pbt,
-                num_samples=100,
+                num_samples=1,
                 reuse_actors=True,
                 max_concurrent_trials=1,
             ),
