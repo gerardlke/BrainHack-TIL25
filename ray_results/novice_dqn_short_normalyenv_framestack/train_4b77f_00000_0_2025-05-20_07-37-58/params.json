@@ -1,0 +1,10 @@
+{
+  "batch_size": 128,
+  "exploration_fraction": 0.49700278714092455,
+  "frame_stack_size": 32,
+  "gamma": 0.85,
+  "learning_rate": 2.347525265339059e-05,
+  "learning_starts": 1000,
+  "policy_grad_steps": 512,
+  "train_freq": 2000
+}

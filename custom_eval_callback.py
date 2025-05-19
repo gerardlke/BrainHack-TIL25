@@ -10,7 +10,7 @@ import numpy as np
 from stable_baselines3.common.logger import Logger
 from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, sync_envs_normalization
 from stable_baselines3.common.callbacks import EventCallback, BaseCallback
-
+from collections import defaultdict
 from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, VecMonitor, is_vecenv_wrapped
 
 
@@ -27,6 +27,8 @@ def custom_evaluate_policy(
 ) -> Union[tuple[float, float], tuple[list[float], list[int]]]:
     """
     yoink evaluate_policy from stable_baselines3/common/evaluation, but tweak to support model
+    
+    heavily hardcoded for convenience, TODO fix everything
     """
 
     is_monitor_wrapped = False
@@ -47,26 +49,29 @@ def custom_evaluate_policy(
         )
 
     # initialize evaluation session trackers.
-    n_envs = env.num_envs
+    n_envs = env.num_envs  # num agents times number of vector envs
     episode_rewards = [[] for _ in range(model.num_policies)] # nested list, per policy.
     # each nested list is appended on a per-env basis
     episode_lengths = [[] for _ in range(model.num_policies)] 
     all_clipped_actions = [None] * model.num_policies
-    all_observations = [None] * model.num_policies
-    placeholder_actions = np.empty(model.num_agents * model.num_envs, dtype=np.int64)
     all_actions = [None] * model.num_policies
+
+    step_actions = np.empty(n_envs, dtype=np.int64)
         
     episode_counts = np.zeros(n_envs, dtype="int")
-    # Divides episodes among different sub environments in the vector as evenly as possible
-    episode_count_targets = np.array([(n_eval_episodes + i) // n_envs for i in range(n_envs)], dtype="int")
-    episode_starts = [np.ones((env.num_envs,), dtype=bool)] * model.num_policies
+    # n_eval_episodes are episodes per num_agents times num_envs
+    episode_count_targets = np.array([n_eval_episodes for _ in range(n_envs)], dtype="int")
+    episode_starts = np.ones((env.num_envs,), dtype=bool)
+
+    scout_envs = int(env.num_envs * (model.num_scout_to_policy / model.num_agents))
+    guard_envs = int(env.num_envs * (model.num_guard_to_policy / model.num_agents))
 
     # per policy per env per agent, rewards are aggregated.
     # btw n_envs is already the num_vec_envs * num_agents, cuz supersuit and parallel env are nice like that
     # for each env that reaches a ended state, we the reward of that agent-env to episode_rewards.
     # vice versa for episode_lengths
-    current_rewards = [np.zeros(n_envs)] * model.num_policies  
-    current_lengths = [np.zeros(n_envs, dtype="int")] * model.num_policies
+    current_rewards = [np.zeros(guard_envs), np.zeros(scout_envs)]
+    current_lengths = [np.zeros(guard_envs, dtype="int"), np.zeros(scout_envs, dtype="int")]
 
     # reset and format last observation
     observations = env.reset()
@@ -102,56 +107,63 @@ def custom_evaluate_policy(
             all_clipped_actions[polid] = clipped_actions
 
         for polid, policy_agent_index in enumerate(policy_agent_indexes):
-            placeholder_actions[policy_agent_index] = all_clipped_actions[polid]
+            step_actions[policy_agent_index] = all_clipped_actions[polid]
 
         # check placeholder actions?
-        print('placeholder_actions', placeholder_actions)
-        
-        new_observations, rewards, dones, infos = env.step(placeholder_actions)
+        # print('step_actions', step_actions)
+        new_observations, rewards, dones, infos = env.step(step_actions)
         policy_agent_indexes = model.get_policy_agent_indexes_from_viewcone(last_obs=new_observations)
         all_curr_obs = model.format_env_returns(new_observations, policy_agent_indexes, device=model.policies[0].device)
         all_rewards = model.format_env_returns(rewards, policy_agent_indexes, device=model.policies[0].device, to_tensor=False)
         all_dones = model.format_env_returns(dones, policy_agent_indexes, device=model.policies[0].device, to_tensor=False)
         all_infos = model.format_env_returns(infos, policy_agent_indexes, device=model.policies[0].device, to_tensor=False)
         # print('all_dones', all_dones)
-        # print('placeholder_actions', placeholder_actions)
+        # print('step_actions', step_actions)
 
 
         for polid, (
             policy_agent_index,
-            current_reward,
-            current_length,
-            episode_count,
-            episode_count_target,
-            episode_start,
-            episode_reward,
-            episode_length,
-            all_reward,
-            all_done,
-            all_info,
+            current_reward, # all n_env * num_agents under policy long e.g 6
+            current_length, # all n_env * num_agents under policy long e.g 6
+            episode_reward, # empty list 
+            episode_length, # empty list 
+            all_reward, # all n_env * num_agents under policy long e.g 6
+            all_done, # all n_env * num_agents under policy long e.g 6
+            all_info, # all n_env * num_agents under policy long e.g 6
         ) in enumerate(zip(
             policy_agent_indexes,
-            current_rewards,
+            current_rewards,  
             current_lengths,
-            episode_counts,
-            episode_count_targets,
-            episode_starts,
-            episode_rewards,
+            episode_rewards, 
             episode_lengths,
             all_rewards,
             all_dones,
             all_infos,
         )):
+            # print(
+            #     policy_agent_indexes,
+            #     current_rewards,  
+            #     current_lengths,
+            #     episode_rewards, 
+            #     episode_lengths,
+            #     all_rewards,
+            #     all_dones,
+            #     all_infos,
+            #     episode_counts,
+            #     episode_count_targets,
+            #     episode_starts,
+            # )
             # policy-based enumeration: each thing in the big tuple up there are of length n_envs
             # policy_agent_index is the indexes of envs * num_agents, that correspond to each policy.
-            for i in range(policy_agent_index):
-                current_reward[i] += all_reward[i]
-                current_length[i] += 1
-                if episode_count[i] < episode_count_target[i]:
+            for enum, index in enumerate(policy_agent_index):
+                current_reward[enum] += all_reward[enum]
+                current_length[enum] += 1
+
+                if episode_counts[index] < episode_count_targets[index]:
                     # unpack values so that the callback can access the local variables
-                    done = all_done[i]
-                    info = all_info[i]
-                    episode_start[i] = done
+                    done = all_done[enum]
+                    info = all_info[enum]
+                    episode_starts[index] = done
 
                     if callback is not None:
                         callback(locals(), globals())
@@ -168,21 +180,21 @@ def custom_evaluate_policy(
                                 episode_reward.append(info["episode"]["r"])
                                 episode_length.append(info["episode"]["l"])
                                 # Only increment at the real end of an episode
-                                episode_count[i] += 1
+                                episode_counts[index] += 1
                         else:
-                            episode_reward.append(current_reward[i])
-                            episode_length.append(current_length[i])
-                            episode_count[i] += 1
-                        current_reward[i] = 0
-                        current_length[i] = 0
+                            episode_reward.append(current_reward[enum])
+                            episode_length.append(current_length[enum])
+                            episode_counts[index] += 1
+                        current_reward[enum] = 0
+                        current_length[enum] = 0
 
         last_obs = all_curr_obs
 
         if render:
             env.render()
-    print('episode_rewards, episode_lengths', episode_rewards, episode_lengths)
-    mean_reward = np.mean(episode_rewards)  # expects list of lists
-    std_reward = np.std(episode_rewards)
+
+    mean_reward = [np.mean(episode_reward) for episode_reward in episode_rewards]  # num_policies long
+    std_reward = [np.std(episode_reward) for episode_reward in episode_rewards]
     if reward_threshold is not None:
         assert mean_reward > reward_threshold, "Mean reward below threshold: " f"{mean_reward:.2f} < {reward_threshold:.2f}"
     if return_episode_rewards:
@@ -257,10 +269,15 @@ class CustomEvalCallback(EventCallback):
         # Logs will be written in ``evaluations.npz``
         if log_path is not None:
             log_path = os.path.join(log_path, "evaluations")
-        self.log_path = log_path
-        self.evaluations_results: list[list[float]] = []
-        self.evaluations_timesteps: list[int] = []
-        self.evaluations_length: list[list[int]] = []
+        self.root_log_path = log_path
+        # horrible triple nested list, but for the sake of keeping to original code flow
+        # while injecting multiple policies.
+        # first list elements are results for seperate policies.
+        # next list elements are results across seperate runs
+        # next list elements are results across each agent-env
+        self.evaluations_results: dict[int, list[list[float]]] = defaultdict(list)
+        self.evaluations_timesteps: dict[int, list[int]] = defaultdict(list)
+        self.evaluations_length: dict[int, list[list[int]]] = defaultdict(list)
         # For computing success rate
         self._is_success_buffer: list[bool] = []
         self.evaluations_successes: list[list[bool]] = []
@@ -273,8 +290,9 @@ class CustomEvalCallback(EventCallback):
         # Create folders if needed
         if self.best_model_save_path is not None:
             os.makedirs(self.best_model_save_path, exist_ok=True)
-        if self.log_path is not None:
-            os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
+        if self.root_log_path is not None:
+            for i in range(self.model.num_policies):
+                os.makedirs(os.path.dirname(os.path.join(self.root_log_path, f'polid_{i}')), exist_ok=True)
 
         # Init callback called on new best model
         if self.callback_on_new_best is not None:
@@ -297,6 +315,7 @@ class CustomEvalCallback(EventCallback):
                 self._is_success_buffer.append(maybe_is_success)
 
     def _on_step(self) -> bool:
+        # print('EVAL_ENV DURING ON_STEP', self.eval_env)
         continue_training = True
 
         if self.eval_freq > 0 and self.n_calls % self.eval_freq == 0:
@@ -314,7 +333,7 @@ class CustomEvalCallback(EventCallback):
             # Reset success rate buffer
             self._is_success_buffer = []
 
-            episode_rewards, episode_lengths = custom_evaluate_policy(
+            policy_episode_rewards, policy_episode_lengths = custom_evaluate_policy(
                 self.model,
                 self.eval_env,
                 n_eval_episodes=self.n_eval_episodes,
@@ -325,37 +344,41 @@ class CustomEvalCallback(EventCallback):
                 callback=self._log_success_callback,
             )
 
-            if self.log_path is not None:
-                assert isinstance(episode_rewards, list)
-                assert isinstance(episode_lengths, list)
-                self.evaluations_timesteps.append(self.num_timesteps)
-                self.evaluations_results.append(episode_rewards)
-                self.evaluations_length.append(episode_lengths)
+            if self.root_log_path is not None:
+                assert isinstance(policy_episode_rewards, list)
+                assert isinstance(policy_episode_lengths, list)
+                for polid in range(len(policy_episode_lengths)):
+                    self.evaluations_timesteps[polid].append(self.num_timesteps)
+                    self.evaluations_results[polid].append(policy_episode_rewards[polid])
+                    self.evaluations_length[polid].append(policy_episode_lengths[polid])
 
                 kwargs = {}
                 # Save success log if present
                 if len(self._is_success_buffer) > 0:
                     self.evaluations_successes.append(self._is_success_buffer)
                     kwargs = dict(successes=self.evaluations_successes)
+                
+                for polid in self.evaluations_results:
+                    np.savez(
+                        os.path.join(self.root_log_path, f'polid_{polid}'),
+                        timesteps=self.evaluations_timesteps[polid],
+                        results=self.evaluations_results[polid],
+                        ep_lengths=self.evaluations_length[polid],
+                        **kwargs,  # type: ignore[arg-type]
+                    )
 
-                np.savez(
-                    self.log_path,
-                    timesteps=self.evaluations_timesteps,
-                    results=self.evaluations_results,
-                    ep_lengths=self.evaluations_length,
-                    **kwargs,  # type: ignore[arg-type]
-                )
+            for polid, policy_episode_reward in enumerate(policy_episode_rewards):
+                policy_episode_rewards[polid] = np.mean(policy_episode_rewards[polid])
+                policy_episode_lengths[polid] = np.mean(policy_episode_lengths[polid])
+                
 
-            mean_reward, std_reward = np.mean(episode_rewards), np.std(episode_rewards)
-            mean_ep_length, std_ep_length = np.mean(episode_lengths), np.std(episode_lengths)
-            self.last_mean_reward = float(mean_reward)
-
-            if self.verbose >= 1:
-                print(f"Eval num_timesteps={self.num_timesteps}, " f"episode_reward={mean_reward:.2f} +/- {std_reward:.2f}")
-                print(f"Episode length: {mean_ep_length:.2f} +/- {std_ep_length:.2f}")
             # Add to current Logger
-            self.logger.record("eval/mean_reward", float(mean_reward))
-            self.logger.record("eval/mean_ep_length", mean_ep_length)
+            [self.logger.record(f"eval/polid_{polid}_mean_reward", float(mean_reward)) for polid, mean_reward in enumerate(policy_episode_rewards)]
+            [self.logger.record(f"eval/polid_{polid}_mean_lengths", float(mean_lengths)) for polid, mean_lengths in enumerate(policy_episode_lengths)]
+            
+            # TODO: save each policy based on its own best reward, not jointly.
+            mean_policy_reward = np.mean(policy_episode_lengths)
+            self.last_mean_reward = float(mean_policy_reward)
 
             if len(self._is_success_buffer) > 0:
                 success_rate = np.mean(self._is_success_buffer)
@@ -367,12 +390,12 @@ class CustomEvalCallback(EventCallback):
             self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
             self.logger.dump(self.num_timesteps)
 
-            if mean_reward > self.best_mean_reward:
+            if mean_policy_reward > self.best_mean_reward:
                 if self.verbose >= 1:
-                    print("New best mean reward!")
+                    print("New best mean policy reward!")
                 if self.best_model_save_path is not None:
                     self.model.save(os.path.join(self.best_model_save_path, "best_model"))
-                self.best_mean_reward = float(mean_reward)
+                self.best_mean_reward = float(mean_policy_reward)
                 # Trigger callback on new best model, if needed
                 if self.callback_on_new_best is not None:
                     continue_training = self.callback_on_new_best.on_step()

@@ -45,9 +45,11 @@ from til_environment.gridworld import raw_env
 
 def build_env(
     reward_names,
+    rewards_dict,
     env_wrappers: list[BaseWrapper] | None = None,
     render_mode: str | None = None,
     env_type: str = 'normal',
+    eval: bool = False,
     **kwargs,
 ):
     """
@@ -61,9 +63,15 @@ def build_env(
     elif env_type == 'binary_viewcone':
         to_build = binary_viewcone_env
     else:
-        assert AssertionError('not accepted env_type.')
+        raise AssertionError('not accepted env_type.')
     print('env_type', env_type)
-    env = to_build(render_mode=render_mode, reward_names=reward_names, **kwargs)
+    env = to_build(
+        render_mode=render_mode,
+        reward_names=reward_names,
+        rewards_dict=rewards_dict,
+        eval=eval,
+        **kwargs
+    )
     print('ENV NOVICE??????????????', env.novice)
     if env_wrappers is None:
         env_wrappers = [
@@ -91,11 +99,14 @@ class normal_env(raw_env):
 
     Base, standard training env.
     """
-    def __init__(self, reward_names, num_iters=1000, **kwargs):
+    def __init__(self, reward_names, rewards_dict, num_iters=1000, eval=False, **kwargs):
         # self.rewards_dict is defined in super init call
         super().__init__(**kwargs)
         self.num_iters = num_iters
         self.reward_names = reward_names
+        self.rewards_dict = rewards_dict
+        self.eval = eval
+
         # Generate 32 bytes of random data
         random_bytes = os.urandom(32)
         # Hash it with SHA-256
@@ -183,20 +194,23 @@ class normal_env(raw_env):
                 )
 
                 # draw debug text information
-                for i, text in enumerate(
-                    [
-                        f"id: {agent[-1]}",
-                        f"direction: {observation['direction']}",
-                        f"scout: {observation['scout']}",
-                        f"reward: {self.rewards[agent]:.1f}",
-                        f"location: {self.agent_locations[agent]}",
-                        f"action {self.num_moves}: {self.actions.get(agent)}",
-                    ]
-                ):
-                    self._draw_text(
-                        text,
-                        topright=(x_lim, y_corner + i * 15),
-                    )
+                try:
+                    for i, text in enumerate(
+                        [
+                            f"id: {agent[-1]}",
+                            f"direction: {observation['direction']}",
+                            f"scout: {observation['scout']}",
+                            f"reward: {self.rewards[agent]:.1f}",
+                            f"location: {self.agent_locations[agent]}",
+                            f"action {self.num_moves}: {self.actions.get(agent)}",
+                        ]
+                    ):
+                        self._draw_text(
+                            text,
+                            topright=(x_lim, y_corner + i * 15),
+                        )
+                except IndexError as e:
+                    raise e('IndexError: Expected observation was a dictionary with direction and scout keys. If this is raised, you likely have debug mode on whilst only returning a Box observation, not a dictionary.')
 
                 # plot observation
                 for x, y in np.ndindex((self.viewcone_length, self.viewcone_width)):
@@ -236,8 +250,8 @@ class normal_env(raw_env):
             )
             # cv2.imwrite(f'/home/jovyan/interns/ben/BrainHack-TIL25/env_{self.hash}.jpg', array)
             # time.sleep()
-            # cv2.imshow(f'env_{self.hash}', array)
-            # cv2.waitKey(1)
+            cv2.imshow(f'env_{self.hash}', array)
+            cv2.waitKey(1)
             # return array
     
     def _capture_scout(self, capturers):
@@ -306,10 +320,6 @@ class normal_env(raw_env):
                         )
                         self._state[x, y] -= Tile.MISSION.value - Tile.EMPTY.value
                     case Tile.EMPTY:
-                        # print('THIS SHOULD BE ZERO DURING EVAL!!!!!!!!')
-                        # print(self.rewards_dict.get(
-                        #     self.reward_names.SCOUT_STEP_EMPTY_TILE, 0
-                        # ))
                         self.rewards[self.scout] += self.rewards_dict.get(
                             self.reward_names.SCOUT_STEP_EMPTY_TILE, 0
                         )
@@ -319,14 +329,14 @@ class normal_env(raw_env):
                 self.agent_directions[agent] + (3 if _action is Action.LEFT else 1)
             ) % 4
             self.rewards[agent] += self.rewards_dict.get(
-                RewardNames.LOOKING, 0
+                self.reward_names.LOOKING, 0
             )
         if _action is (Action.STAY):
             # apply stationary penalty
             self.rewards[agent] += self.rewards_dict.get(
                 self.reward_names.STATIONARY_PENALTY, 0
             )
-        if agent != self.scout:
+        if agent != self.scout and not self.eval:
             # we now give guards negative rewards, based on their distance to the scout
             distance = self.get_info(agent)['euclidean']
             # negative of distance as reward increment? 
@@ -525,9 +535,25 @@ class binary_viewcone_env(normal_env):
     """
     @functools.lru_cache(maxsize=None)
     def observation_space(self, agent: AgentID):
-        return Dict(
-            {
-                "viewcone": Box(
+        # return Dict(
+        #     {
+        #         "viewcone": Box(
+        #             0,
+        #             1,
+        #             shape=(
+        #                 8,  # hardcode lol
+        #                 self.viewcone_length,
+        #                 self.viewcone_width,
+        #             ),
+        #             dtype=np.int64,
+        #         ),
+        #         "direction": Discrete(len(Direction)),
+        #         "scout": Discrete(2),
+        #         "location": Box(0, self.size, shape=(2,), dtype=np.int64),
+        #         "step": Discrete(self.num_iters),
+        #     }
+        # )
+        return Box(
                     0,
                     1,
                     shape=(
@@ -536,13 +562,7 @@ class binary_viewcone_env(normal_env):
                         self.viewcone_width,
                     ),
                     dtype=np.int64,
-                ),
-                "direction": Discrete(len(Direction)),
-                "scout": Discrete(2),
-                "location": Box(0, self.size, shape=(2,), dtype=np.int64),
-                "step": Discrete(self.num_iters),
-            }
-        )
+                )
 
     def observe(self, agent):
         """
@@ -584,11 +604,12 @@ class binary_viewcone_env(normal_env):
             '(R C B) -> B C R', 
             R=self.viewcone_width, C=self.viewcone_length, B=8)
 
-        return {
-            "viewcone": bit_planes,
-            "direction": self.agent_directions[agent],
-            "location": self.agent_locations[agent],
-            "scout": 1 if agent == self.scout else 0,
-            "step": self.num_moves,
-        }
+        return bit_planes
+        # return {
+        #     "viewcone": bit_planes,
+        #     "direction": self.agent_directions[agent],
+        #     "location": self.agent_locations[agent],
+        #     "scout": 1 if agent == self.scout else 0,
+        #     "step": self.num_moves,
+        # }
     

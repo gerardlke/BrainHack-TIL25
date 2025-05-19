@@ -98,6 +98,8 @@ class IndependentDQN(OffPolicyAlgorithm):
 
 
         self.num_envs = env.num_envs // num_agents
+        self.num_scout_to_policy = 1
+        self.num_guard_to_policy = 3
         self.num_scout_envs = self.num_envs * 1  # i love hardcoding!
         self.num_guard_envs = self.num_envs * 3
         self.observation_space = env.observation_space
@@ -246,16 +248,12 @@ class IndependentDQN(OffPolicyAlgorithm):
                 policy._update_current_progress_remaining(
                     policy.num_timesteps, total_timesteps  # 
                 )
-                if log_interval is not None and num_timesteps % log_interval == 0:
+                if log_interval is not None and policy.num_timesteps % log_interval == 0:
                     fps = int(policy.num_timesteps / (time.time() - policy.start_time))
                     policy.logger.record("polid", polid, exclude="tensorboard")
                     policy.logger.record(
-                        "time/iterations", num_timesteps, exclude="tensorboard"
+                        "time/iterations", policy.num_timesteps, exclude="tensorboard"
                     )
-                    # print(f'np.concatenate(total_rewards[{polid}])')
-                    # print(
-                    #       np.unique(np.concatenate(total_rewards[polid]))
-                    # )
                     mean_policy_reward = (np.sum(np.concatenate(total_rewards[polid])) / len(total_rewards[polid])).item()
                     policy.logger.record(
                         "rollout/mean_policy_reward", mean_policy_reward,
@@ -313,7 +311,7 @@ class IndependentDQN(OffPolicyAlgorithm):
         all_infos = [None] * self.num_policies
         all_actions = [None] * self.num_policies
         all_buffer_actions = [None] * self.num_policies
-        placeholder_actions = np.empty(self.num_agents * self.num_envs, dtype=np.int64)
+        step_actions = np.empty(self.env.num_envs, dtype=np.int64)
         num_collected_steps, num_collected_episodes = 0, 0
 
         # current way of inferring which is the scout based off viewcone
@@ -323,9 +321,11 @@ class IndependentDQN(OffPolicyAlgorithm):
         # policy_agent_indexes = self.get_policy_agent_indexes_from_dict_obs(last_obs=last_obs)
 
         # before formatted, last_obs is the direct return of self.env.reset()
+        print('last obs', last_obs.shape)
         last_obs_buffer = self.format_env_returns(last_obs, policy_agent_indexes, device=self.policies[0].device, to_tensor=False)
         last_obs = self.format_env_returns(last_obs, policy_agent_indexes, device=self.policies[0].device)
-
+        print('last_obs_buffer', [b.shape for b in last_obs_buffer])
+        print('policy_agent_indexes', policy_agent_indexes)
         # iterate over agents, and do pre-rollout setups.
         for polid, policy in enumerate(self.policies):
             policy.policy.set_training_mode(False)
@@ -372,10 +372,12 @@ class IndependentDQN(OffPolicyAlgorithm):
                     all_clipped_actions[polid] = clipped_actions
 
             for polid, policy_agent_index in enumerate(policy_agent_indexes):
-                placeholder_actions[policy_agent_index] = all_clipped_actions[polid]
+                step_actions[policy_agent_index] = all_clipped_actions[polid]
+                
+            # print('step_actions? collect rollouts', step_actions)
 
             # actually step in the environment
-            obs, rewards, dones, infos = self.env.step(placeholder_actions)   
+            obs, rewards, dones, infos = self.env.step(step_actions)   
 
             # policy_agent_indexes = self.get_policy_agent_indexes_from_dict_obs(last_obs=obs)
             policy_agent_indexes = self.get_policy_agent_indexes_from_viewcone(last_obs=obs)
@@ -543,7 +545,7 @@ class IndependentDQN(OffPolicyAlgorithm):
         # Select action randomly or according to policy
         if random and (agent.num_timesteps < learning_starts and not (agent.use_sde and agent.use_sde_at_warmup)):
             # Warmup phase
-            print('RANDOM SAMPLING HAPPENING, AGENT PREDICT IS NOT BEING CALLED')
+            # print('RANDOM SAMPLING HAPPENING, AGENT PREDICT IS NOT BEING CALLED')
             unscaled_action = np.array([agent.action_space.sample() for _ in range(n_envs)])
         else:
             # Note: when using continuous actions,
