@@ -307,10 +307,10 @@ class normal_env(raw_env):
                         )
                         self._state[x, y] -= Tile.MISSION.value - Tile.EMPTY.value
                     case Tile.EMPTY:
-                        print('THIS SHOULD BE ZERO DURING EVAL!!!!!!!!')
-                        print(self.rewards_dict.get(
-                            self.reward_names.SCOUT_STEP_EMPTY_TILE, 0
-                        ))
+                        # print('THIS SHOULD BE ZERO DURING EVAL!!!!!!!!')
+                        # print(self.rewards_dict.get(
+                        #     self.reward_names.SCOUT_STEP_EMPTY_TILE, 0
+                        # ))
                         self.rewards[self.scout] += self.rewards_dict.get(
                             self.reward_names.SCOUT_STEP_EMPTY_TILE, 0
                         )
