@@ -4,11 +4,11 @@ import argparse
 import numpy as np
 from independent_dqn import IndependentDQN
 from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 from stable_baselines3.common.env_util import make_vec_env
 import torch
-from stablebaselines_gridworld import build_env
+
 # from til_environment.training_gridworld import env
 from pettingzoo.utils.conversions import aec_to_parallel
 from til_environment.types import Action, Direction, Player, RewardNames, Tile, Wall
@@ -19,8 +19,11 @@ from ray.air import session
 from ray.tune.schedulers import PopulationBasedTraining
 from stable_baselines3.common.utils import configure_logger, obs_as_tensor
 
+from custom_eval_callback import CustomEvalCallback
+from stablebaselines_gridworld import build_env
+
 from enum import IntEnum, StrEnum, auto
-class RewardNames(StrEnum):
+class CustomRewardNames(StrEnum):
     GUARD_WINS = auto()
     GUARD_CAPTURES = auto()
     SCOUT_CAPTURED = auto()
@@ -40,13 +43,13 @@ class RewardNames(StrEnum):
     BACKWARD = auto()
 
 STD_REWARDS_DICT = {
-    RewardNames.GUARD_CAPTURES: 50,
-    RewardNames.SCOUT_CAPTURED: -50,
-    RewardNames.SCOUT_RECON: 1,
-    RewardNames.SCOUT_MISSION: 5,
-    RewardNames.WALL_COLLISION: 0,
-    RewardNames.STATIONARY_PENALTY: 0,
-    RewardNames.SCOUT_STEP_EMPTY_TILE: 0,
+    CustomRewardNames.GUARD_CAPTURES: 50,
+    CustomRewardNames.SCOUT_CAPTURED: -50,
+    CustomRewardNames.SCOUT_RECON: 1,
+    CustomRewardNames.SCOUT_MISSION: 5,
+    CustomRewardNames.WALL_COLLISION: 0,
+    CustomRewardNames.STATIONARY_PENALTY: 0,
+    CustomRewardNames.SCOUT_STEP_EMPTY_TILE: 0,
 }
 REWARDS_DICT = {
     RewardNames.GUARD_CAPTURES: 500,
@@ -66,7 +69,16 @@ GLOB_ENV = 'normal'
 GLOB_DEBUG = True
 EXPERIMENT_NAME = 'novice_dqn_long_normalenv'
 
-def make_new_vec_gridworld(rewards_dict, render_mode=None, env_type='normal', num_vec_envs=1):
+
+def make_new_vec_gridworld(
+    rewards_dict,
+    reward_names,
+    render_mode=None,
+    env_type='normal',
+    num_vec_envs=1,
+    frame_stack_size=4,
+    num_iters=GLOB_NUM_ITERS,
+    ):
     """
     Helper func to build gridworld into a vectorized form. Will also return original AEC env for evaluation too, so dont worry
     """
@@ -76,28 +88,43 @@ def make_new_vec_gridworld(rewards_dict, render_mode=None, env_type='normal', nu
         render_mode=render_mode,
         novice=GLOB_NOVICE,
         rewards_dict=rewards_dict,
-        num_iters=GLOB_NUM_ITERS,
+        reward_names=reward_names,
+        num_iters=num_iters,
         debug=GLOB_DEBUG,
     )
-    # gridworld = env(
-    #     env_wrappers=[],
-    #     render_mode=render_mode,
-    #     novice=GLOB_NOVICE,
-    # )
-    gridworld = aec_to_parallel(gridworld)
-    vec_env = ss.pettingzoo_env_to_vec_env_v1(gridworld)
+
+    parallel_gridworld = aec_to_parallel(gridworld)
+    frame_stack = ss.frame_stack_v1(parallel_gridworld, stack_size=frame_stack_size, stack_dim=0)
+    vec_env = ss.pettingzoo_env_to_vec_env_v1(frame_stack)
     vec_env = ss.concat_vec_envs_v1(vec_env, num_vec_envs=num_vec_envs, num_cpus=2, base_class='stable_baselines3')
 
-    return gridworld.aec_env, vec_env
+    return gridworld, vec_env
 
 
 def train(config):
-    num_vec_envs = 1
-    gridworld, vec_env = make_new_vec_gridworld(
+    """
+    Main training function. Instantiates evaluation and training environments, model, and calls learn.
+    Configurations from ray tune's hyperparam search space are thrown in here via config (a dictionary.)
+    """
+    frame_stack_size = config.pop('frame_stack_size')
+    num_vec_envs = 4
+
+    _, train_vec_env = make_new_vec_gridworld(
+        reward_names=CustomRewardNames,
         rewards_dict=REWARDS_DICT,
         render_mode='rgb_array',
         num_vec_envs=num_vec_envs,
-        env_type=GLOB_ENV)
+        env_type=GLOB_ENV,
+        frame_stack_size=frame_stack_size,)
+
+    _, eval_env = make_new_vec_gridworld(
+        reward_names=CustomRewardNames,
+        rewards_dict=STD_REWARDS_DICT,
+        render_mode='rgb_array',
+        num_vec_envs=2,
+        env_type=GLOB_ENV,
+        frame_stack_size=frame_stack_size,)
+
     trial_name = session.get_trial_name()
     num_agents = 4
     num_policies = 2
@@ -105,22 +132,33 @@ def train(config):
     policy_grad_steps = config.pop('policy_grad_steps')
 
     model = IndependentDQN(
-        "MultiInputPolicy",
+        policy="MlpPolicy",
         num_agents=num_agents,
         num_policies=num_policies,
         buffer_size=int(1e6),
-        env=vec_env,
+        env=train_vec_env,
         verbose=1,
         tensorboard_log=f"/mnt/e/BrainHack-TIL25/dqn_logs/{trial_name}",
         **config
     )
-
-    # TODO: make it multi agent Set where to save the model
-    checkpoint_callbacks = [[CheckpointCallback(
-        save_freq=1000,                    # Save every n steps
-        save_path=f"/mnt/e/BrainHack-TIL25/checkpoints/dqn_agent_{i}/{trial_name}",         # Target directory
-        name_prefix=f"{EXPERIMENT_NAME}_novice_{GLOB_NOVICE}_run_{trial_name}"
-    )] for i in range(num_policies)]
+    
+    eval_freq = max(1000 // num_vec_envs, 1)
+    callbacks = [
+        [
+            CheckpointCallback(
+                save_freq=eval_freq,
+                save_path=f"/mnt/e/BrainHack-TIL25/checkpoints/dqn_agent_{i}/{trial_name}",
+                name_prefix=f"{EXPERIMENT_NAME}_novice_{GLOB_NOVICE}_run_{trial_name}"
+                ),
+        ] for i in range(num_policies)
+    ]
+    eval_callback = CustomEvalCallback(
+            eval_freq=eval_freq,
+            eval_env=eval_env,                    
+            n_eval_episodes=10,
+            log_path=f"/mnt/e/BrainHack-TIL25/dqn_logs/{trial_name}",
+            deterministic=False,
+            )
 
     # test out loading before running learn
     # save_path = "/mnt/e/BrainHack-TIL25/checkpoints/dqn/train_e0d1b_00000/final_dqn_model_for_run_train_e0d1b_00000"
@@ -137,11 +175,12 @@ def train(config):
     #     tensorboard_log=f"/mnt/e/BrainHack-TIL25/eval_logs/{trial_name}",
     #     **config
     # )
-
+    
     model.learn(
         policy_grad_steps=policy_grad_steps,
-        total_timesteps=5000000, 
-        callbacks=checkpoint_callbacks)
+        total_timesteps=2000, 
+        callbacks=callbacks,
+        eval_callback=eval_callback)
     # print('guards rewards:', np.unique(model.policies[0].replay_buffer.rewards, return_counts=True))
     # print('scout rewards:', np.unique(model.policies[1].replay_buffer.rewards, return_counts=True))
 
@@ -151,27 +190,47 @@ def train(config):
     # .load instantiates a new instance of the model. This is to simulate how you would run inference for this model.
     # instantiate the model, and do rollouts without action noise or randomness or sampling from replay buffer.
     # gridworld, vec_env = make_new_vec_gridworld(
+    #     reward_names=CustomRewardNames,
     #     rewards_dict=STD_REWARDS_DICT,
-    #     render_mode=None,
-    #     num_vec_envs=1,
-    #     env_type=GLOB_ENV
+    #     render_mode='rgb_array',
+    #     num_vec_envs=num_vec_envs,
+    #     env_type=GLOB_ENV,
+    #     frame_stack_size=frame_stack_size,
+    #     num_iters=100,
+    # )
+    # config.pop('learning_starts')
+    # config.pop('train_freq')
+    # eval_model = IndependentDQN.load(
+    #     policy="MlpPolicy",
+    #     path=save_path,
+    #     learning_starts=0,
+    #     num_policies=num_policies,
+    #     buffer_size=int(1e5),
+    #     num_agents=num_agents,
+    #     env=vec_env,
+    #     train_freq=100 * 1,
+    #     verbose=1,
+    #     tensorboard_log=f"/mnt/e/BrainHack-TIL25/eval_logs/final_model_{trial_name}",
+    #     **config
     # )
 
-    # hijack collect_rollouts function to evaluate for us.
-    all_scout_score, all_guard_score = [], []
-    num_eval_rounds = 10
-    for _ in range(num_eval_rounds):
-        total_rewards = model.eval(
-            total_timesteps=100, 
-            progress_bar=True,
-        )
-        all_guard_score.append(
-            (np.sum(np.concatenate(total_rewards[0])) / len(total_rewards[0])).item()
-        )
-        all_scout_score.append(
-            (np.sum(np.concatenate(total_rewards[1])) / len(total_rewards[1])).item()
-        )
-        print(all_guard_score, all_scout_score)
+    # # hijack collect_rollouts function to evaluate for us.
+    # all_scout_score, all_guard_score = [], []
+    # num_eval_rounds = 10
+    # print('--------------------------IN EVAL--------------------------------')
+    # for _ in range(num_eval_rounds):
+    #     total_rewards = eval_model.eval(
+    #         total_timesteps=100, 
+    #         progress_bar=True,
+    #     )
+    #     # print('total_rewards', total_rewards)
+    #     all_guard_score.append(
+    #         (np.sum(np.concatenate(total_rewards[0])) / len(total_rewards[0])).item()
+    #     )
+    #     all_scout_score.append(
+    #         (np.sum(np.concatenate(total_rewards[1])) / len(total_rewards[1])).item()
+    #     )
+    #     print(all_guard_score, all_scout_score)
 
     mean_scout_score = sum(all_scout_score) / len(all_scout_score)
     mean_guard_score = sum(all_guard_score) / len(all_guard_score)
@@ -207,17 +266,18 @@ if __name__ == "__main__":
         hyperparam_mutations={
                 "learning_rate": tune.loguniform(1e-5, 1e-3),
                 "policy_grad_steps": tune.choice([256, 512, 1024]),
-                "gamma": tune.uniform(0.95, 0.999),
+                "gamma": tune.uniform(0.60, 0.80),
                 "batch_size": tune.choice([64, 128]),
                 "learning_starts": tune.choice([1000, 2000, 4000]),
                 "train_freq": tune.choice([1000, 2000]),
-                "exploration_fraction": tune.uniform(0.60, 0.90)
+                "frame_stack_size": tune.choice([8, 16, 32]),
+                "exploration_fraction": tune.uniform(0.40, 0.80)
             })
         tuner = Tuner(
             tune.with_resources(train, resources={"cpu": 6.0}),
             tune_config=tune.TuneConfig(
                 scheduler=pbt,
-                num_samples=100,
+                num_samples=1,
                 reuse_actors=True,
                 max_concurrent_trials=1,
             ),

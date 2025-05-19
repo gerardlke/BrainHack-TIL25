@@ -8,6 +8,7 @@ from functools import partial
 import os
 import hashlib
 import cv2
+import time
 
 import gymnasium
 import numpy as np
@@ -43,6 +44,7 @@ from til_environment.gridworld import raw_env
 
 
 def build_env(
+    reward_names,
     env_wrappers: list[BaseWrapper] | None = None,
     render_mode: str | None = None,
     env_type: str = 'normal',
@@ -61,7 +63,7 @@ def build_env(
     else:
         assert AssertionError('not accepted env_type.')
     print('env_type', env_type)
-    env = to_build(render_mode=render_mode, **kwargs)
+    env = to_build(render_mode=render_mode, reward_names=reward_names, **kwargs)
     print('ENV NOVICE??????????????', env.novice)
     if env_wrappers is None:
         env_wrappers = [
@@ -82,38 +84,6 @@ TODO: things to try for our environments:
 2. Guide guards using distance from scout as a reward
 3. See if you can exploit distance from scout into some latent state of the model (recurrentPPO?)
 """
-from enum import IntEnum, StrEnum, auto
-class RewardNames(StrEnum):
-    GUARD_WINS = auto()
-    GUARD_CAPTURES = auto()
-    SCOUT_CAPTURED = auto()
-    SCOUT_RECON = auto()
-    SCOUT_MISSION = auto()
-    WALL_COLLISION = auto()
-    AGENT_COLLIDER = auto()
-    AGENT_COLLIDEE = auto()
-    STATIONARY_PENALTY = auto()
-    GUARD_TRUNCATION = auto()
-    SCOUT_TRUNCATION = auto()
-    GUARD_STEP = auto()
-    SCOUT_STEP = auto()
-    SCOUT_STEP_EMPTY_TILE = auto()
-    LOOKING = auto()
-    FORWARD = auto()
-    BACKWARD = auto()
-
-REWARDS_DICT = {
-    RewardNames.GUARD_CAPTURES: 500,
-    RewardNames.SCOUT_CAPTURED: -50,
-    RewardNames.SCOUT_RECON: 1,
-    RewardNames.SCOUT_MISSION: 5,
-    RewardNames.WALL_COLLISION: -2,
-    RewardNames.STATIONARY_PENALTY: -0.5,
-    RewardNames.SCOUT_STEP_EMPTY_TILE: -0.25,
-    RewardNames.LOOKING:-0.25,
-    RewardNames.FORWARD:0.5,
-    RewardNames.BACKWARD:0.5,
-}
 
 class normal_env(raw_env):
     """
@@ -121,9 +91,11 @@ class normal_env(raw_env):
 
     Base, standard training env.
     """
-    def __init__(self, num_iters=1000, **kwargs):
+    def __init__(self, reward_names, num_iters=1000, **kwargs):
+        # self.rewards_dict is defined in super init call
         super().__init__(**kwargs)
         self.num_iters = num_iters
+        self.reward_names = reward_names
         # Generate 32 bytes of random data
         random_bytes = os.urandom(32)
         # Hash it with SHA-256
@@ -262,10 +234,44 @@ class normal_env(raw_env):
             array = np.transpose(
                 np.array(pygame.surfarray.pixels3d(self.window)), axes=(1, 0, 2)
             )
-            cv2.imshow(f'env_{self.hash}', array)
-            cv2.waitKey(1)
-            return array
-        
+            # cv2.imwrite(f'/home/jovyan/interns/ben/BrainHack-TIL25/env_{self.hash}.jpg', array)
+            # time.sleep()
+            # cv2.imshow(f'env_{self.hash}', array)
+            # cv2.waitKey(1)
+            # return array
+    
+    def _capture_scout(self, capturers):
+        """
+        Given a list of agents who captured the scout, processes those agents' capture of the scout.
+        Terminates the game and gives guards and the scout corresponding rewards.
+        """
+        self.logger.debug(f"{capturers} have captured the scout")
+        # scout gets captured, terminate and reward guard
+        self.terminations = {agent: True for agent in self.agents}
+        for agent in self.agents:
+            if agent == self.scout:
+                self.rewards[self.scout] += self.rewards_dict.get(
+                    self.reward_names.SCOUT_CAPTURED, 0
+                )
+                continue
+            self.rewards[agent] += self.rewards_dict.get(self.reward_names.GUARD_WINS, 0)
+            if agent in capturers:
+                self.rewards[agent] += self.rewards_dict.get(
+                    self.reward_names.GUARD_CAPTURES, 0
+                )
+
+    def _handle_agent_collision(self, agent1: AgentID, agent2: AgentID):
+        """
+        Given two agents, handle agent1 colliding into agent2
+        """
+        self.logger.debug(f"{agent1} collided with {agent2}")
+        self.rewards[agent1] += self.rewards_dict.get(self.reward_names.AGENT_COLLIDER, 0)
+        self.rewards[agent2] += self.rewards_dict.get(self.reward_names.AGENT_COLLIDEE, 0)
+
+    def _handle_wall_collision(self, agent: AgentID):
+        self.logger.debug(f"{agent} collided with a wall")
+        self.rewards[agent] += self.rewards_dict.get(self.reward_names.WALL_COLLISION, 0)
+
     def _move_agent(self, agent: AgentID, action: int):
         """
         Updates agent location, accruing rewards along the way
@@ -291,17 +297,21 @@ class normal_env(raw_env):
                 match Tile(tile % 4):
                     case Tile.RECON:
                         self.rewards[self.scout] += self.rewards_dict.get(
-                            RewardNames.SCOUT_RECON, 0
+                            self.reward_names.SCOUT_RECON, 0
                         )
                         self._state[x, y] -= Tile.RECON.value - Tile.EMPTY.value
                     case Tile.MISSION:
                         self.rewards[self.scout] += self.rewards_dict.get(
-                            RewardNames.SCOUT_MISSION, 0
+                            self.reward_names.SCOUT_MISSION, 0
                         )
                         self._state[x, y] -= Tile.MISSION.value - Tile.EMPTY.value
                     case Tile.EMPTY:
+                        # print('THIS SHOULD BE ZERO DURING EVAL!!!!!!!!')
+                        # print(self.rewards_dict.get(
+                        #     self.reward_names.SCOUT_STEP_EMPTY_TILE, 0
+                        # ))
                         self.rewards[self.scout] += self.rewards_dict.get(
-                            RewardNames.SCOUT_STEP_EMPTY_TILE, 0
+                            self.reward_names.SCOUT_STEP_EMPTY_TILE, 0
                         )
         if _action in (Action.LEFT, Action.RIGHT):
             # update direction of agent, right = +1 and left = -1 (which is equivalent to +3), mod 4.
@@ -314,7 +324,7 @@ class normal_env(raw_env):
         if _action is (Action.STAY):
             # apply stationary penalty
             self.rewards[agent] += self.rewards_dict.get(
-                RewardNames.STATIONARY_PENALTY, 0
+                self.reward_names.STATIONARY_PENALTY, 0
             )
         if agent != self.scout:
             # we now give guards negative rewards, based on their distance to the scout
@@ -382,16 +392,16 @@ class normal_env(raw_env):
                 self.truncations = {agent: True for agent in self.agents}
                 for agent in self.agents:
                     self.rewards[agent] += (
-                        self.rewards_dict.get(RewardNames.SCOUT_TRUNCATION, 0)
+                        self.rewards_dict.get(self.reward_names.SCOUT_TRUNCATION, 0)
                         if agent == self.scout
-                        else self.rewards_dict.get(RewardNames.GUARD_TRUNCATION, 0)
+                        else self.rewards_dict.get(self.reward_names.GUARD_TRUNCATION, 0)
                     )
             else:
                 for agent in self.agents:
                     self.rewards[agent] += (
-                        self.rewards_dict.get(RewardNames.SCOUT_STEP, 0)
+                        self.rewards_dict.get(self.reward_names.SCOUT_STEP, 0)
                         if agent == self.scout
-                        else self.rewards_dict.get(RewardNames.GUARD_STEP, 0)
+                        else self.rewards_dict.get(self.reward_names.GUARD_STEP, 0)
                     )
 
             # observe the current state and get new infos
@@ -414,9 +424,24 @@ class normal_env(raw_env):
 
     @functools.lru_cache(maxsize=None)
     def observation_space(self, agent: AgentID):
-        return Dict(
-            {
-                "viewcone": Box(
+        # return Dict(
+        #     {
+        #         "viewcone": Box(
+        #             0,
+        #             2**8 - 1,
+        #             shape=(
+        #                 self.viewcone_length,
+        #                 self.viewcone_width,
+        #             ),
+        #             dtype=np.int64,
+        #         ),
+        #         "direction": Discrete(len(Direction)),
+        #         "scout": Discrete(2),
+        #         "location": Box(0, self.size, shape=(2,), dtype=np.int64),
+        #         "step": Discrete(self.num_iters),
+        #     }
+        # )
+        return Box(
                     0,
                     2**8 - 1,
                     shape=(
@@ -424,13 +449,7 @@ class normal_env(raw_env):
                         self.viewcone_width,
                     ),
                     dtype=np.int64,
-                ),
-                "direction": Discrete(len(Direction)),
-                "scout": Discrete(2),
-                "location": Box(0, self.size, shape=(2,), dtype=np.int64),
-                "step": Discrete(self.num_iters),
-            }
-        )
+                )
     
     def reset(self, seed=None, options=None):
         """
@@ -477,19 +496,27 @@ class normal_env(raw_env):
         for agent in self.agents:
             if agent == self.scout:
                 self.rewards[self.scout] += self.rewards_dict.get(
-                    RewardNames.SCOUT_CAPTURED, 0
+                    self.reward_names.SCOUT_CAPTURED, 0
                 )
                 continue
-            self.rewards[agent] += self.rewards_dict.get(RewardNames.GUARD_WINS, 0)
+            self.rewards[agent] += self.rewards_dict.get(self.reward_names.GUARD_WINS, 0)
             if agent in capturers:
                 self.rewards[agent] += self.rewards_dict.get(
-                    RewardNames.GUARD_CAPTURES, 0
+                    self.reward_names.GUARD_CAPTURES, 0
                 )
                 print('CAPTURED!!!!', self.rewards[agent],
                       self.rewards_dict.get(
-                    RewardNames.GUARD_CAPTURES, 0
+                    self.reward_names.GUARD_CAPTURES, 0
                 ))
                 # gsdfSGdFGF
+
+    def observe(self, agent):
+        # run super method, but prune to only return the viewcone observation.
+        # this will break rendering for now.
+        observations = super().observe(agent)
+        # print('obs', observations)
+        # print('returning viewcone', observations['viewcone'])
+        return observations['viewcone']
         
 class binary_viewcone_env(normal_env):
     # yoink brainhack code but change some tings

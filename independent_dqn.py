@@ -22,6 +22,7 @@ from stable_baselines3.common.utils import safe_mean, should_collect_more_steps
 from stable_baselines3.common.buffers import ReplayBuffer
 from supersuit.vector.markov_vector_wrapper import MarkovVectorEnv
 from stable_baselines3.common.noise import ActionNoise, VectorizedActionNoise
+from einops import rearrange
 
 class DummyGymEnv(gymnasium.Env):
     def __init__(self, observation_space, action_space):
@@ -101,6 +102,11 @@ class IndependentDQN(OffPolicyAlgorithm):
         self.num_guard_envs = self.num_envs * 3
         self.observation_space = env.observation_space
         self.action_space = env.action_space
+        print('self.obs space', self.observation_space)
+        print('self.action_space', self.action_space)
+        print('self.num_scout_envs, self.num_guard_envs', self.num_scout_envs, self.num_guard_envs)
+        self._vec_normalize_env = None
+        print('self._vec_normalize_env', self._vec_normalize_env)
         self.learning_starts = learning_starts
         self.train_freq = train_freq
         super()._convert_train_freq()
@@ -145,6 +151,7 @@ class IndependentDQN(OffPolicyAlgorithm):
             )
             for i in range(self.num_policies)
         ]
+        print('do policies?', self.policies[0]._vec_normalize_env)
 
         assert self.num_policies == 2, 'Right now only supports 2 num_policies; 1 scout and 1 unified guard'
 
@@ -153,6 +160,7 @@ class IndependentDQN(OffPolicyAlgorithm):
         total_timesteps: int,
         policy_grad_steps: int,
         callbacks: Optional[List[List[MaybeCallback]]] = None,
+        eval_callback: Optional[MaybeCallback] = None,
         log_interval: int = 1,
         tb_log_name: str = "IndependentDQN",
         reset_num_timesteps: bool = True,
@@ -162,12 +170,14 @@ class IndependentDQN(OffPolicyAlgorithm):
 
         target: collect rollbacks and train up till total_timesteps.
         """
+        if eval_callback is not None:
+            eval_callback = self._init_callback(eval_callback)
 
         if callbacks is not None:
             assert len(callbacks) == self.num_policies, 'callbacks must a list of num_policies number of nested lists'
             assert all(isinstance(callback, list) for callback in callbacks), 'callbacks must a list of num_policies number of nested lists'
 
-        num_timesteps = 0
+        self.num_timesteps = 0
         all_total_timesteps = []
         
         self._logger = configure_logger(
@@ -219,16 +229,17 @@ class IndependentDQN(OffPolicyAlgorithm):
         for policy in self.policies:
             policy._last_episode_starts = np.ones((self.num_envs,), dtype=bool)
 
-        while num_timesteps < total_timesteps:
+        while self.num_timesteps < total_timesteps:
             # environment sampling. has to be done in this particular way because of
             # gridworld's perculiarities
             total_rewards, rollout_timesteps = self.collect_rollouts(
                 last_obs=reset_obs,
                 callbacks=callbacks,
+                eval_callback=eval_callback,
                 train_freq=self.train_freq,
                 learning_starts=self.learning_starts,
             )
-            num_timesteps += rollout_timesteps
+            self.num_timesteps += rollout_timesteps
 
             # agent training.
             for polid, policy in enumerate(self.policies):
@@ -273,6 +284,7 @@ class IndependentDQN(OffPolicyAlgorithm):
             last_obs,
             train_freq,
             learning_starts: int = 0,
+            eval_callback: Optional[MaybeCallback] = None,
             callbacks: list = [],
             run_on_step: bool = True,
             eval: bool = False,
@@ -295,7 +307,6 @@ class IndependentDQN(OffPolicyAlgorithm):
         # temporary lists to hold things before saved into history_buffer of agent.
         all_last_episode_starts = [None] * self.num_policies
         all_clipped_actions = [None] * self.num_policies
-        all_next_obs = [None] * self.num_policies
         all_rewards = [None] * self.num_policies
         total_rewards = [[] for _ in range(self.num_policies)] 
         all_dones = [None] * self.num_policies
@@ -304,11 +315,17 @@ class IndependentDQN(OffPolicyAlgorithm):
         all_buffer_actions = [None] * self.num_policies
         placeholder_actions = np.empty(self.num_agents * self.num_envs, dtype=np.int64)
         num_collected_steps, num_collected_episodes = 0, 0
-        policy_agent_indexes = self.get_policy_agent_indexes_from_scout(last_obs=last_obs)
+
+        # current way of inferring which is the scout based off viewcone
+        policy_agent_indexes = self.get_policy_agent_indexes_from_viewcone(last_obs=last_obs)
+        
+        # this was for the time i was feeding in dictionary inputs, which is not supported by supersuit's frame stacking environment
+        # policy_agent_indexes = self.get_policy_agent_indexes_from_dict_obs(last_obs=last_obs)
+
         # before formatted, last_obs is the direct return of self.env.reset()
         last_obs_buffer = self.format_env_returns(last_obs, policy_agent_indexes, device=self.policies[0].device, to_tensor=False)
         last_obs = self.format_env_returns(last_obs, policy_agent_indexes, device=self.policies[0].device)
-        
+
         # iterate over agents, and do pre-rollout setups.
         for polid, policy in enumerate(self.policies):
             policy.policy.set_training_mode(False)
@@ -325,9 +342,6 @@ class IndependentDQN(OffPolicyAlgorithm):
             all_last_episode_starts[polid] = policy._last_episode_starts
 
         # loop over action -> step -> observation -> policy -> action ... loop
-        print_next_after_dones = False
-        print_next_next_after_dones = False
-        reset_called_once = True
         while should_collect_more_steps(train_freq, num_collected_steps, num_collected_episodes):
             with th.no_grad():
                 for polid, (policy, n_envs) in enumerate(zip(self.policies, [self.num_guard_envs, self.num_scout_envs])):
@@ -362,11 +376,10 @@ class IndependentDQN(OffPolicyAlgorithm):
 
             # actually step in the environment
             obs, rewards, dones, infos = self.env.step(placeholder_actions)   
-            # print(self.env.venv.vec_envs[0].par_env.aec_env.scout)
-            # print(self.env.venv.pipes[0].par_env.aec_env.scout)
-            policy_agent_indexes = self.get_policy_agent_indexes_from_scout(last_obs=obs)
-            # print('policy_agent_indexes', policy_agent_indexes)
-            # obs may be a list like the others, or may be a dict, each string key indexing sometensor of shape 
+
+            # policy_agent_indexes = self.get_policy_agent_indexes_from_dict_obs(last_obs=obs)
+            policy_agent_indexes = self.get_policy_agent_indexes_from_viewcone(last_obs=obs)
+
             all_curr_obs = self.format_env_returns(obs, policy_agent_indexes, device=self.policies[0].device)
             all_curr_obs_buffer = self.format_env_returns(obs, policy_agent_indexes, device=self.policies[0].device, to_tensor=False)
             all_rewards = self.format_env_returns(rewards, policy_agent_indexes, device=self.policies[0].device, to_tensor=False)
@@ -410,14 +423,16 @@ class IndependentDQN(OffPolicyAlgorithm):
 
             for policy in self.policies:
                 policy.num_timesteps += self.num_envs
+            
 
             for callback in callbacks:
                 callback.update_locals(locals())
+            
+            # must-have for checkpointing
             [callback.on_step() for callback in callbacks]
-            # for callback in callbacks:
-            #     print('callback.on_step()', callback.on_step)
-            # if not [callback.on_step() for callback in callbacks]:
-            #     break
+            # specific callback for eval
+            if eval_callback is not None:
+                eval_callback.on_step()
 
             for polid, policy in enumerate(self.policies):
                 policy._update_info_buffer(all_infos[polid])
@@ -534,7 +549,6 @@ class IndependentDQN(OffPolicyAlgorithm):
             # Note: when using continuous actions,
             # we assume that the policy uses tanh to scale the action
             # We use non-deterministic action in the case of SAC, for TD3, it does not matter
-            # print('obs??', obs)
             unscaled_action, _ = agent.predict(obs, deterministic=False)
 
         # Rescale the action from [low, high] to [-1, 1]
@@ -613,7 +627,7 @@ class IndependentDQN(OffPolicyAlgorithm):
 
         return to_policies
 
-    def get_policy_agent_indexes_from_scout(self, last_obs):
+    def get_policy_agent_indexes_from_dict_obs(self, last_obs):
         """
         Helper func to decode which indexes of observations of shape (self.num_envs * self.num_agents, ...)
         map to which policies.
@@ -624,6 +638,16 @@ class IndependentDQN(OffPolicyAlgorithm):
             policy_agent_indexes[polid] = np.where(policy_mapping == polid)[0]
 
         return policy_agent_indexes
+
+    def get_policy_agent_indexes_from_viewcone(self, last_obs):
+        bits = np.unpackbits(last_obs[:, :, 2, 2][np.newaxis, :, :].astype(np.uint8), axis=0)
+        is_scout = bits[5, :, 0]
+        policy_agent_indexes = [
+            np.where(is_scout == 0)[0], np.where(is_scout == 1)[0]
+        ]
+
+        return policy_agent_indexes
+
     
     def eval(
         self,
