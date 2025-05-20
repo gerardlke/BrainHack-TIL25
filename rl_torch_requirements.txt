@@ -13,6 +13,7 @@ scipy
 torch
 tensorboard
 stable_baselines3
+stable_baselines3[extra]
 sb3-contrib
 
 fastapi
