@@ -185,7 +185,7 @@ class IndependentDQN(OffPolicyAlgorithm):
         self._logger = configure_logger(
             self.verbose,
             self.tensorboard_log,
-            tb_log_name,
+            tb_log_name,policy.
             reset_num_timesteps,
         )
         logdir = self.logger.dir
@@ -256,7 +256,7 @@ class IndependentDQN(OffPolicyAlgorithm):
                     )
                     mean_policy_reward = (np.sum(np.concatenate(total_rewards[polid])) / len(total_rewards[polid])).item()
                     policy.logger.record(
-                        "rollout/mean_policy_reward", mean_policy_reward,
+                        f"rollout/mean_policy_reward_polid_{polid}", mean_policy_reward,
                     )
                     
                     policy.logger.record("time/fps", fps)

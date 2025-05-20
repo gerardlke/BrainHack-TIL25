@@ -535,6 +535,9 @@ class binary_viewcone_env(normal_env):
     """
     @functools.lru_cache(maxsize=None)
     def observation_space(self, agent: AgentID):
+        """
+        Binary viewcone. must be flattened since after binarizing, result viewcone will be 3D, which will not support frame stacking.
+        """
         # return Dict(
         #     {
         #         "viewcone": Box(
@@ -557,9 +560,7 @@ class binary_viewcone_env(normal_env):
                     0,
                     1,
                     shape=(
-                        8,  # hardcode lol
-                        self.viewcone_length,
-                        self.viewcone_width,
+                        8 *self.viewcone_length *self.viewcone_width,
                     ),
                     dtype=np.int64,
                 )
@@ -599,10 +600,7 @@ class binary_viewcone_env(normal_env):
                     else np.uint8(Player.GUARD.power)
                 )
 
-        bit_planes = np.unpackbits(view.astype(np.uint8))
-        bit_planes = rearrange(bit_planes, 
-            '(R C B) -> B C R', 
-            R=self.viewcone_width, C=self.viewcone_length, B=8)
+        bit_planes = np.unpackbits(view.astype(np.uint8))  # made R C B into (R C B)
 
         return bit_planes
         # return {

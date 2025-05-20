@@ -157,6 +157,8 @@ def custom_evaluate_policy(
             # policy_agent_index is the indexes of envs * num_agents, that correspond to each policy.
             for enum, index in enumerate(policy_agent_index):
                 current_reward[enum] += all_reward[enum]
+                # print('all_reward[enum]', all_reward[enum])
+                # print('current_rewards', current_rewards)
                 current_length[enum] += 1
 
                 if episode_counts[index] < episode_count_targets[index]:
@@ -193,6 +195,9 @@ def custom_evaluate_policy(
         if render:
             env.render()
 
+    print('each episode_rewards:')
+    print('lengths', [len(episode_reward) for episode_reward in episode_rewards])
+    print('means', [np.mean(episode_reward) for episode_reward in episode_rewards])
     mean_reward = [np.mean(episode_reward) for episode_reward in episode_rewards]  # num_policies long
     std_reward = [np.std(episode_reward) for episode_reward in episode_rewards]
     if reward_threshold is not None:
@@ -315,7 +320,6 @@ class CustomEvalCallback(EventCallback):
                 self._is_success_buffer.append(maybe_is_success)
 
     def _on_step(self) -> bool:
-        # print('EVAL_ENV DURING ON_STEP', self.eval_env)
         continue_training = True
 
         if self.eval_freq > 0 and self.n_calls % self.eval_freq == 0:
