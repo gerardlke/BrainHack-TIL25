@@ -26,7 +26,7 @@ from stable_baselines3.common.callbacks import (
     CheckpointCallback,
     StopTrainingOnRewardThreshold,
     CallbackList,
-    ProgressBarCallback,
+    # ProgressBarCallback,
     StopTrainingOnNoModelImprovement,
 )
 from stablebaselines_gridworld import build_env
@@ -67,8 +67,8 @@ GLOB_ENV = 'binary_viewcone'
 # GLOB_ENV = 'normal'
 GLOB_DEBUG = False
 EXPERIMENT_NAME = 'novice_ppo_long_binaryenv_varyall'
-# root_dir = "/home/jovyan/interns/ben/BrainHack-TIL25"
-root_dir = "/mnt/e/BrainHack-TIL25"
+root_dir = "/home/jovyan/interns/ben/BrainHack-TIL25"
+# root_dir = "/mnt/e/BrainHack-TIL25"
 
 
 def make_new_vec_gridworld(
@@ -110,10 +110,10 @@ def train(config):
     Main training function. Instantiates evaluation and training environments, model, and calls learn.
     Configurations from ray tune's hyperparam search space are thrown in here via config (a dictionary.)
     """
-    num_vec_envs = 1
+    num_vec_envs = 4
     frame_stack_size = config.pop('frame_stack_size')
     n_steps = config.pop('n_steps')
-    total_timesteps = 5_000_000
+    total_timesteps = 2_000_000
     training_iters = int(total_timesteps / n_steps)
     
     GUARD_CAPTURES = config.pop('guard_captures', 50)
@@ -179,6 +179,7 @@ def train(config):
     # divide by number of evals you want to run.
     num_evals = 100
     eval_freq = int(max(training_iters / num_evals, 1)) * n_steps
+    print('eval_freq', eval_freq)
 
     eval_log_path = f"{root_dir}/ppo_logs/{trial_name}"
     
@@ -205,13 +206,13 @@ def train(config):
         callback_on_new_best=above_reward,
         deterministic=False,
     )
-    progress_bar = ProgressBarCallback()
+    # progress_bar = ProgressBarCallback()
 
     # Combine callbacks
     callback = CallbackList([
         eval_callback,
         checkpoint_callback,
-        progress_bar,
+        # progress_bar,
     ])
 
     model.learn(
@@ -255,7 +256,7 @@ if __name__ == "__main__":
         time_attr="training_iteration",
         metric="mean_all_score",
         mode="max",
-        perturbation_interval=40,  # every n trials
+        perturbation_interval=5,  # every n trials
         hyperparam_mutations={
                 "learning_rate": tune.loguniform(5e-4, 1e-3),
                 "gamma": tune.choice([0.90, 0.99]),
@@ -305,12 +306,23 @@ if __name__ == "__main__":
             eval=True,
             frame_stack_size=16,
         )
+        path = "/mnt/e/BrainHack-TIL25/checkpoints/train_0236b_00001/novice_ppo_long_binaryenv_varyall_novice_True_run_train_0236b_00001_1916928_steps.zip"
         model = PPO.load(
-            path = args.ckpt
+            path = path
         )
 
+        def stack_frames(past_obs, curr_obs, observation_space):
+            if past_obs is None:
+                past_obs = np.tile(curr_obs, observation_space)
+            else:
+                past_obs[:-size] = past_obs[size:]  # shifts all to the back
+                past_obs[-size:] = observation  # adds most recent observation first
+
+            return past_obs
+
+
         NUM_ROUNDS = 8
-        past_obs = []
+        past_obs = None
         for _ in range(NUM_ROUNDS):
             gridworld.reset()
             rewards = {agent: 0 for agent in gridworld.possible_agents}
@@ -319,20 +331,10 @@ if __name__ == "__main__":
                 observation, reward, termination, truncation, info = gridworld.last()
 
                 # which is the scout
-                last_obs = rearrange(observation, 
+                observation = rearrange(observation, 
                     '(C R B) -> B C R', 
                     R=5, C=7, B=8)
-                is_scout = last_obs[5, 2, 2]
-                print('observation before', observation)
-                print('is_scout?', is_scout)
-                # observation['direction'] = np.array(observation['direction'])
-                # observation['scout'] = np.array(observation['scout'])
-                # observation['step'] = np.array(observation['step'])
-                
-                # observation = {
-                #     k: obs_as_tensor(v, device='cpu') for k, v in observation.items()
-                # }
-                # print('observation after', observation)
+                is_scout = observation[5, 2, 2]
 
                 for a in gridworld.agents:
                     rewards[a] += gridworld.rewards[a]
@@ -340,14 +342,10 @@ if __name__ == "__main__":
                 if termination or truncation:
                     action = None
                 elif is_scout == 1:
-                    # run scout model
-                    # preprocess observations
-                    size = observation.shape[0]
-                    past_obs[:-size] = past_obs[size:]  # shifts all to the back
-                    past_obs[-size:] = observation  # adds most recent observation first
-                    # if past_obs are not of length 16 yet, pad
+                    # run scout model for now only?
+                    stack_frames(past_obs, observation, model.observation_space)
                     
-                    action, _ = model.predict(observation, deterministic=False)
+                    action, _ = model.predict(past_obs, deterministic=False)
                     print('scout action', action)
                 elif is_scout == 0:
                     action = np.random.randint(0, 5)
@@ -355,7 +353,7 @@ if __name__ == "__main__":
 
                 print(action)
                 gridworld.step(action)
-            past_obs = 
+            # past_obs = 
 
         gridworld.close()
         print(f"total rewards: {rewards}")
