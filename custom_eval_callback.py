@@ -6,206 +6,12 @@ from typing import TYPE_CHECKING, Any, Callable, Optional, Union
 import gymnasium as gym
 from gymnasium.spaces import Box, Discrete
 import numpy as np
-
+from einops import rearrange
 from stable_baselines3.common.logger import Logger
 from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, sync_envs_normalization
 from stable_baselines3.common.callbacks import EventCallback, BaseCallback
 from collections import defaultdict
 from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, VecMonitor, is_vecenv_wrapped
-
-
-def custom_evaluate_policy(
-    model: "type_aliases.PolicyPredictor",
-    env: Union[gym.Env, VecEnv],
-    n_eval_episodes: int = 10,
-    deterministic: bool = True,
-    render: bool = False,
-    callback: Optional[Callable[[dict[str, Any], dict[str, Any]], None]] = None,
-    reward_threshold: Optional[float] = None,
-    return_episode_rewards: bool = False,
-    warn: bool = True,
-) -> Union[tuple[float, float], tuple[list[float], list[int]]]:
-    """
-    yoink evaluate_policy from stable_baselines3/common/evaluation, but tweak to support model
-    
-    heavily hardcoded for convenience, TODO fix everything
-    """
-
-    is_monitor_wrapped = False
-    # Avoid circular import
-    from stable_baselines3.common.monitor import Monitor
-
-    if not isinstance(env, VecEnv):
-        env = DummyVecEnv([lambda: env])  # type: ignore[list-item, return-value]
-
-    is_monitor_wrapped = is_vecenv_wrapped(env, VecMonitor) or env.env_is_wrapped(Monitor)[0]
-
-    if not is_monitor_wrapped and warn:
-        warnings.warn(
-            "Evaluation environment is not wrapped with a ``Monitor`` wrapper. "
-            "This may result in reporting modified episode lengths and rewards, if other wrappers happen to modify these. "
-            "Consider wrapping environment first with ``Monitor`` wrapper.",
-            UserWarning,
-        )
-
-    # initialize evaluation session trackers.
-    n_envs = env.num_envs  # num agents times number of vector envs
-    episode_rewards = [[] for _ in range(model.num_policies)] # nested list, per policy.
-    # each nested list is appended on a per-env basis
-    episode_lengths = [[] for _ in range(model.num_policies)] 
-    all_clipped_actions = [None] * model.num_policies
-    all_actions = [None] * model.num_policies
-
-    step_actions = np.empty(n_envs, dtype=np.int64)
-        
-    episode_counts = np.zeros(n_envs, dtype="int")
-    # n_eval_episodes are episodes per num_agents times num_envs
-    episode_count_targets = np.array([n_eval_episodes for _ in range(n_envs)], dtype="int")
-    episode_starts = np.ones((env.num_envs,), dtype=bool)
-
-    scout_envs = int(env.num_envs * (model.num_scout_to_policy / model.num_agents))
-    guard_envs = int(env.num_envs * (model.num_guard_to_policy / model.num_agents))
-
-    # per policy per env per agent, rewards are aggregated.
-    # btw n_envs is already the num_vec_envs * num_agents, cuz supersuit and parallel env are nice like that
-    # for each env that reaches a ended state, we the reward of that agent-env to episode_rewards.
-    # vice versa for episode_lengths
-    current_rewards = [np.zeros(guard_envs), np.zeros(scout_envs)]
-    current_lengths = [np.zeros(guard_envs, dtype="int"), np.zeros(scout_envs, dtype="int")]
-
-    # reset and format last observation
-    observations = env.reset()
-    policy_agent_indexes = model.get_policy_agent_indexes_from_viewcone(last_obs=observations)
-    last_obs = model.format_env_returns(observations, policy_agent_indexes, device=model.policies[0].device)
-
-    states = None
-    # predict each policy
-    while (episode_counts < episode_count_targets).any():
-        for polid, policy in enumerate(model.policies):
-            actions, states = policy.predict(
-                last_obs[polid],  # type: ignore[arg-type]
-                state=states,
-                episode_start=episode_starts,
-                deterministic=deterministic,
-            )
-            all_actions[polid] = actions
-
-            if hasattr(all_actions[polid], 'cpu'):
-                all_actions[polid] = all_actions[polid].cpu().numpy()
-            clipped_actions = all_actions[polid]
-            if isinstance(model.action_space, Box):
-                clipped_actions = np.clip(
-                    clipped_actions,
-                    model.action_space.low,
-                    model.action_space.high,
-                )
-            elif isinstance(model.action_space, Discrete):
-                # get integer from numpy array
-                clipped_actions = np.array(
-                    [action.item() for action in clipped_actions]
-                )
-            all_clipped_actions[polid] = clipped_actions
-
-        for polid, policy_agent_index in enumerate(policy_agent_indexes):
-            step_actions[policy_agent_index] = all_clipped_actions[polid]
-
-        # check placeholder actions?
-        # print('step_actions', step_actions)
-        new_observations, rewards, dones, infos = env.step(step_actions)
-        policy_agent_indexes = model.get_policy_agent_indexes_from_viewcone(last_obs=new_observations)
-        all_curr_obs = model.format_env_returns(new_observations, policy_agent_indexes, device=model.policies[0].device)
-        all_rewards = model.format_env_returns(rewards, policy_agent_indexes, device=model.policies[0].device, to_tensor=False)
-        all_dones = model.format_env_returns(dones, policy_agent_indexes, device=model.policies[0].device, to_tensor=False)
-        all_infos = model.format_env_returns(infos, policy_agent_indexes, device=model.policies[0].device, to_tensor=False)
-        # print('all_dones', all_dones)
-        # print('step_actions', step_actions)
-
-
-        for polid, (
-            policy_agent_index,
-            current_reward, # all n_env * num_agents under policy long e.g 6
-            current_length, # all n_env * num_agents under policy long e.g 6
-            episode_reward, # empty list 
-            episode_length, # empty list 
-            all_reward, # all n_env * num_agents under policy long e.g 6
-            all_done, # all n_env * num_agents under policy long e.g 6
-            all_info, # all n_env * num_agents under policy long e.g 6
-        ) in enumerate(zip(
-            policy_agent_indexes,
-            current_rewards,  
-            current_lengths,
-            episode_rewards, 
-            episode_lengths,
-            all_rewards,
-            all_dones,
-            all_infos,
-        )):
-            # print(
-            #     policy_agent_indexes,
-            #     current_rewards,  
-            #     current_lengths,
-            #     episode_rewards, 
-            #     episode_lengths,
-            #     all_rewards,
-            #     all_dones,
-            #     all_infos,
-            #     episode_counts,
-            #     episode_count_targets,
-            #     episode_starts,
-            # )
-            # policy-based enumeration: each thing in the big tuple up there are of length n_envs
-            # policy_agent_index is the indexes of envs * num_agents, that correspond to each policy.
-            for enum, index in enumerate(policy_agent_index):
-                current_reward[enum] += all_reward[enum]
-                # print('all_reward[enum]', all_reward[enum])
-                # print('current_rewards', current_rewards)
-                current_length[enum] += 1
-
-                if episode_counts[index] < episode_count_targets[index]:
-                    # unpack values so that the callback can access the local variables
-                    done = all_done[enum]
-                    info = all_info[enum]
-                    episode_starts[index] = done
-
-                    if callback is not None:
-                        callback(locals(), globals())
-
-                    if done:
-                        if is_monitor_wrapped:
-                            # Atari wrapper can send a "done" signal when
-                            # the agent loses a life, but it does not correspond
-                            # to the true end of episode
-                            if "episode" in info.keys():
-                                # Do not trust "done" with episode endings.
-                                # Monitor wrapper includes "episode" key in info if environment
-                                # has been wrapped with it. Use those rewards instead.
-                                episode_reward.append(info["episode"]["r"])
-                                episode_length.append(info["episode"]["l"])
-                                # Only increment at the real end of an episode
-                                episode_counts[index] += 1
-                        else:
-                            episode_reward.append(current_reward[enum])
-                            episode_length.append(current_length[enum])
-                            episode_counts[index] += 1
-                        current_reward[enum] = 0
-                        current_length[enum] = 0
-
-        last_obs = all_curr_obs
-
-        if render:
-            env.render()
-
-    print('each episode_rewards:')
-    print('lengths', [len(episode_reward) for episode_reward in episode_rewards])
-    print('means', [np.mean(episode_reward) for episode_reward in episode_rewards])
-    mean_reward = [np.mean(episode_reward) for episode_reward in episode_rewards]  # num_policies long
-    std_reward = [np.std(episode_reward) for episode_reward in episode_rewards]
-    if reward_threshold is not None:
-        assert mean_reward > reward_threshold, "Mean reward below threshold: " f"{mean_reward:.2f} < {reward_threshold:.2f}"
-    if return_episode_rewards:
-        return episode_rewards, episode_lengths
-
-    return mean_reward, std_reward
 
 
 class CustomEvalCallback(EventCallback):
@@ -238,6 +44,7 @@ class CustomEvalCallback(EventCallback):
 
     def __init__(
         self,
+        in_bits,
         eval_env: Union[gym.Env, VecEnv],
         callback_on_new_best: Optional[BaseCallback] = None,
         callback_after_eval: Optional[BaseCallback] = None,
@@ -249,9 +56,9 @@ class CustomEvalCallback(EventCallback):
         render: bool = False,
         verbose: int = 1,
         warn: bool = True,
-    ):
+    ):  
         super().__init__(callback_after_eval, verbose=verbose)
-
+        self.in_bits = in_bits
         self.callback_on_new_best = callback_on_new_best
         if self.callback_on_new_best is not None:
             # Give access to the parent
@@ -296,7 +103,11 @@ class CustomEvalCallback(EventCallback):
         if self.best_model_save_path is not None:
             os.makedirs(self.best_model_save_path, exist_ok=True)
         if self.root_log_path is not None:
-            for i in range(self.model.num_policies):
+            if not hasattr(self.model, 'num_policies'):
+                self.num_policies = 2
+            else:
+                self.num_policies = self.model.num_policies
+            for i in range(self.num_policies):
                 os.makedirs(os.path.dirname(os.path.join(self.root_log_path, f'polid_{i}')), exist_ok=True)
 
         # Init callback called on new best model
@@ -337,7 +148,18 @@ class CustomEvalCallback(EventCallback):
             # Reset success rate buffer
             self._is_success_buffer = []
 
-            policy_episode_rewards, policy_episode_lengths = custom_evaluate_policy(
+            # policy_episode_rewards, policy_episode_lengths = custom_marl_evaluate_policy(
+            #     self.model,
+            #     self.eval_env,
+            #     n_eval_episodes=self.n_eval_episodes,
+            #     render=self.render,
+            #     deterministic=self.deterministic,
+            #     return_episode_rewards=True,
+            #     warn=self.warn,
+            #     callback=self._log_success_callback,
+            # )
+            # will return a list of lists. each is for each policy
+            policy_episode_rewards, policy_episode_lengths = self.seperate_evaluate_policy(
                 self.model,
                 self.eval_env,
                 n_eval_episodes=self.n_eval_episodes,
@@ -347,6 +169,7 @@ class CustomEvalCallback(EventCallback):
                 warn=self.warn,
                 callback=self._log_success_callback,
             )
+
 
             if self.root_log_path is not None:
                 assert isinstance(policy_episode_rewards, list)
@@ -370,7 +193,7 @@ class CustomEvalCallback(EventCallback):
                         ep_lengths=self.evaluations_length[polid],
                         **kwargs,  # type: ignore[arg-type]
                     )
-
+            # mean them all
             for polid, policy_episode_reward in enumerate(policy_episode_rewards):
                 policy_episode_rewards[polid] = np.mean(policy_episode_rewards[polid])
                 policy_episode_lengths[polid] = np.mean(policy_episode_lengths[polid])
@@ -381,7 +204,7 @@ class CustomEvalCallback(EventCallback):
             [self.logger.record(f"eval/polid_{polid}_mean_lengths", float(mean_lengths)) for polid, mean_lengths in enumerate(policy_episode_lengths)]
             
             # TODO: save each policy based on its own best reward, not jointly.
-            mean_policy_reward = np.mean(policy_episode_lengths)
+            mean_policy_reward = np.mean(policy_episode_rewards)
             self.last_mean_reward = float(mean_policy_reward)
 
             if len(self._is_success_buffer) > 0:
@@ -418,4 +241,344 @@ class CustomEvalCallback(EventCallback):
         """
         if self.callback:
             self.callback.update_locals(locals_)
+
+    def custom_marl_evaluate_policy(
+        self,
+        model: "type_aliases.PolicyPredictor",
+        env: Union[gym.Env, VecEnv],
+        n_eval_episodes: int = 10,
+        deterministic: bool = True,
+        render: bool = False,
+        callback: Optional[Callable[[dict[str, Any], dict[str, Any]], None]] = None,
+        reward_threshold: Optional[float] = None,
+        return_episode_rewards: bool = False,
+        warn: bool = True,
+    ) -> Union[tuple[float, float], tuple[list[float], list[int]]]:
+        """
+        yoink evaluate_policy from stable_baselines3/common/evaluation, but tweak to support model
+        
+        heavily hardcoded for convenience, TODO fix everything
+        """
+
+        is_monitor_wrapped = False
+        # Avoid circular import
+        from stable_baselines3.common.monitor import Monitor
+
+        if not isinstance(env, VecEnv):
+            env = DummyVecEnv([lambda: env])  # type: ignore[list-item, return-value]
+
+        is_monitor_wrapped = is_vecenv_wrapped(env, VecMonitor) or env.env_is_wrapped(Monitor)[0]
+
+        if not is_monitor_wrapped and warn:
+            warnings.warn(
+                "Evaluation environment is not wrapped with a ``Monitor`` wrapper. "
+                "This may result in reporting modified episode lengths and rewards, if other wrappers happen to modify these. "
+                "Consider wrapping environment first with ``Monitor`` wrapper.",
+                UserWarning,
+            )
+
+        # initialize evaluation session trackers.
+        n_envs = env.num_envs  # num agents times number of vector envs
+        episode_rewards = [[] for _ in range(model.num_policies)] # nested list, per policy.
+        # each nested list is appended on a per-env basis
+        episode_lengths = [[] for _ in range(model.num_policies)] 
+        all_clipped_actions = [None] * model.num_policies
+        all_actions = [None] * model.num_policies
+
+        step_actions = np.empty(n_envs, dtype=np.int64)
+            
+        episode_counts = np.zeros(n_envs, dtype="int")
+        # n_eval_episodes are episodes per num_agents times num_envs
+        episode_count_targets = np.array([n_eval_episodes for _ in range(n_envs)], dtype="int")
+        episode_starts = np.ones((env.num_envs,), dtype=bool)
+
+        scout_envs = int(env.num_envs * (model.num_scout_to_policy / model.num_agents))
+        guard_envs = int(env.num_envs * (model.num_guard_to_policy / model.num_agents))
+
+        # per policy per env per agent, rewards are aggregated.
+        # btw n_envs is already the num_vec_envs * num_agents, cuz supersuit and parallel env are nice like that
+        # for each env that reaches a ended state, we the reward of that agent-env to episode_rewards.
+        # vice versa for episode_lengths
+        current_rewards = [np.zeros(guard_envs), np.zeros(scout_envs)]
+        current_lengths = [np.zeros(guard_envs, dtype="int"), np.zeros(scout_envs, dtype="int")]
+
+        # reset and format last observation
+        observations = env.reset()
+        policy_agent_indexes = model.get_policy_agent_indexes_from_viewcone(last_obs=observations)
+        last_obs = model.format_env_returns(observations, policy_agent_indexes, device=model.policies[0].device)
+
+        states = None
+        # predict each policy
+        while (episode_counts < episode_count_targets).any():
+            for polid, policy in enumerate(model.policies):
+                actions, states = policy.predict(
+                    last_obs[polid],  # type: ignore[arg-type]
+                    state=states,
+                    episode_start=episode_starts,
+                    deterministic=deterministic,
+                )
+                all_actions[polid] = actions
+
+                if hasattr(all_actions[polid], 'cpu'):
+                    all_actions[polid] = all_actions[polid].cpu().numpy()
+                clipped_actions = all_actions[polid]
+                if isinstance(model.action_space, Box):
+                    clipped_actions = np.clip(
+                        clipped_actions,
+                        model.action_space.low,
+                        model.action_space.high,
+                    )
+                elif isinstance(model.action_space, Discrete):
+                    # get integer from numpy array
+                    clipped_actions = np.array(
+                        [action.item() for action in clipped_actions]
+                    )
+                all_clipped_actions[polid] = clipped_actions
+
+            for polid, policy_agent_index in enumerate(policy_agent_indexes):
+                step_actions[policy_agent_index] = all_clipped_actions[polid]
+
+            # check placeholder actions?
+            # print('step_actions', step_actions)
+            new_observations, rewards, dones, infos = env.step(step_actions)
+            policy_agent_indexes = model.get_policy_agent_indexes_from_viewcone(last_obs=new_observations)
+            all_curr_obs = model.format_env_returns(new_observations, policy_agent_indexes, device=model.policies[0].device)
+            all_rewards = model.format_env_returns(rewards, policy_agent_indexes, device=model.policies[0].device, to_tensor=False)
+            all_dones = model.format_env_returns(dones, policy_agent_indexes, device=model.policies[0].device, to_tensor=False)
+            all_infos = model.format_env_returns(infos, policy_agent_indexes, device=model.policies[0].device, to_tensor=False)
+            # print('all_dones', all_dones)
+            # print('step_actions', step_actions)
+
+
+            for polid, (
+                policy_agent_index,
+                current_reward, # all n_env * num_agents under policy long e.g 6
+                current_length, # all n_env * num_agents under policy long e.g 6
+                episode_reward, # empty list 
+                episode_length, # empty list 
+                all_reward, # all n_env * num_agents under policy long e.g 6
+                all_done, # all n_env * num_agents under policy long e.g 6
+                all_info, # all n_env * num_agents under policy long e.g 6
+            ) in enumerate(zip(
+                policy_agent_indexes,
+                current_rewards,  
+                current_lengths,
+                episode_rewards, 
+                episode_lengths,
+                all_rewards,
+                all_dones,
+                all_infos,
+            )):
+                # print(
+                #     policy_agent_indexes,
+                #     current_rewards,  
+                #     current_lengths,
+                #     episode_rewards, 
+                #     episode_lengths,
+                #     all_rewards,
+                #     all_dones,
+                #     all_infos,
+                #     episode_counts,
+                #     episode_count_targets,
+                #     episode_starts,
+                # )
+                # policy-based enumeration: each thing in the big tuple up there are of length n_envs
+                # policy_agent_index is the indexes of envs * num_agents, that correspond to each policy.
+                for enum, index in enumerate(policy_agent_index):
+                    current_reward[enum] += all_reward[enum]
+                    # print('all_reward[enum]', all_reward[enum])
+                    # print('current_rewards', current_rewards)
+                    current_length[enum] += 1
+
+                    if episode_counts[index] < episode_count_targets[index]:
+                        # unpack values so that the callback can access the local variables
+                        done = all_done[enum]
+                        info = all_info[enum]
+                        episode_starts[index] = done
+
+                        if callback is not None:
+                            callback(locals(), globals())
+
+                        if done:
+                            if is_monitor_wrapped:
+                                # Atari wrapper can send a "done" signal when
+                                # the agent loses a life, but it does not correspond
+                                # to the true end of episode
+                                if "episode" in info.keys():
+                                    # Do not trust "done" with episode endings.
+                                    # Monitor wrapper includes "episode" key in info if environment
+                                    # has been wrapped with it. Use those rewards instead.
+                                    episode_reward.append(info["episode"]["r"])
+                                    episode_length.append(info["episode"]["l"])
+                                    # Only increment at the real end of an episode
+                                    episode_counts[index] += 1
+                            else:
+                                episode_reward.append(current_reward[enum])
+                                episode_length.append(current_length[enum])
+                                episode_counts[index] += 1
+                            current_reward[enum] = 0
+                            current_length[enum] = 0
+
+            last_obs = all_curr_obs
+
+            if render:
+                env.render()
+
+        print('each episode_rewards:')
+        print('lengths', [len(episode_reward) for episode_reward in episode_rewards])
+        print('means', [np.mean(episode_reward) for episode_reward in episode_rewards])
+        mean_reward = [np.mean(episode_reward) for episode_reward in episode_rewards]  # num_policies long
+        std_reward = [np.std(episode_reward) for episode_reward in episode_rewards]
+        if reward_threshold is not None:
+            assert mean_reward > reward_threshold, "Mean reward below threshold: " f"{mean_reward:.2f} < {reward_threshold:.2f}"
+        if return_episode_rewards:
+            return episode_rewards, episode_lengths
+
+        return mean_reward, std_reward
+
+
+    def seperate_evaluate_policy(
+        self,
+        model: "type_aliases.PolicyPredictor",
+        _env: Union[gym.Env, VecEnv],
+        n_eval_episodes: int = 10,
+        deterministic: bool = True,
+        render: bool = False,
+        callback: Optional[Callable[[dict[str, Any], dict[str, Any]], None]] = None,
+        reward_threshold: Optional[float] = None,
+        return_episode_rewards: bool = False,
+        warn: bool = True,
+    ) -> Union[tuple[float, float], tuple[list[float], list[int]]]:
+        """
+        Runs the policy for ``n_eval_episodes`` episodes and outputs the average return
+        per episode (sum of undiscounted rewards).
+        If a vector env is passed in, this divides the episodes to evaluate onto the
+        different elements of the vector env. This static division of work is done to
+        remove bias. See https://github.com/DLR-RM/stable-baselines3/issues/402 for more
+        details and discussion.
+
+        .. note::
+            If environment has not been wrapped with ``Monitor`` wrapper, reward and
+            episode lengths are counted as it appears with ``env.step`` calls. If
+            the environment contains wrappers that modify rewards or episode lengths
+            (e.g. reward scaling, early episode reset), these will affect the evaluation
+            results as well. You can avoid this by wrapping environment with ``Monitor``
+            wrapper before anything else.
+
+        :param model: The RL agent you want to evaluate. This can be any object
+            that implements a ``predict`` method, such as an RL algorithm (``BaseAlgorithm``)
+            or policy (``BasePolicy``).
+        :param env: The gym environment or ``VecEnv`` environment.
+        :param n_eval_episodes: Number of episode to evaluate the agent
+        :param deterministic: Whether to use deterministic or stochastic actions
+        :param render: Whether to render the environment or not
+        :param callback: callback function to perform additional checks,
+            called ``n_envs`` times after each step.
+            Gets locals() and globals() passed as parameters.
+            See https://github.com/DLR-RM/stable-baselines3/issues/1912 for more details.
+        :param reward_threshold: Minimum expected reward per episode,
+            this will raise an error if the performance is not met
+        :param return_episode_rewards: If True, a list of rewards and episode lengths
+            per episode will be returned instead of the mean.
+        :param warn: If True (default), warns user about lack of a Monitor wrapper in the
+            evaluation environment.
+        :return: Mean return per episode (sum of rewards), std of reward per episode.
+            Returns (list[float], list[int]) when ``return_episode_rewards`` is True, first
+            list containing per-episode return and second containing per-episode lengths
+            (in number of steps).
+        """
+        is_monitor_wrapped = False
+        observations = _env.reset()
+        policy_agent_indexes = model.get_2_policy_agent_indexes_from_viewcone(last_obs=observations)
+
+        # Avoid circular import
+        from stable_baselines3.common.monitor import Monitor
+
+        if not isinstance(_env, VecEnv):
+            _env = DummyVecEnv([lambda: _env])  # type: ignore[list-item, return-value]
+
+        is_monitor_wrapped = is_vecenv_wrapped(_env, VecMonitor) or _env.env_is_wrapped(Monitor)[0]
+
+        if not is_monitor_wrapped and warn:
+            warnings.warn(
+                "Evaluation environment is not wrapped with a ``Monitor`` wrapper. "
+                "This may result in reporting modified episode lengths and rewards, if other wrappers happen to modify these. "
+                "Consider wrapping environment first with ``Monitor`` wrapper.",
+                UserWarning,
+            )
+
+        n_envs = _env.num_envs
+        episode_rewards = [[] for _ in range(self.num_policies)] # nested list, per policy.
+        # each nested list is appended on a per-env basis
+        episode_lengths = [[] for _ in range(self.num_policies)] 
+
+        episode_counts = np.zeros(n_envs, dtype="int")
+        # Divides episodes among different sub environments in the vector as evenly as possible
+        episode_count_targets = np.array([n_eval_episodes for _ in range(n_envs)], dtype="int")
+        episode_starts = np.ones((_env.num_envs,), dtype=bool)
+
+        scout_envs = int(_env.num_envs * len(policy_agent_indexes[1]))
+        guard_envs = int(_env.num_envs * len(policy_agent_indexes[0]))
+
+        current_rewards = [np.zeros(guard_envs), np.zeros(scout_envs)]
+        current_lengths = [np.zeros(guard_envs, dtype="int"), np.zeros(scout_envs, dtype="int")]
+
+        states = None
+        episode_starts = np.ones((_env.num_envs,), dtype=bool)
+        while (episode_counts < episode_count_targets).any():
+            actions, states = model.predict(
+                observations,  # type: ignore[arg-type]
+                state=states,
+                episode_start=episode_starts,
+                deterministic=deterministic,
+            )
+            new_observations, rewards, dones, infos = _env.step(actions)
+            policy_agent_indexes = model.get_2_policy_agent_indexes_from_viewcone(last_obs=observations)
+
+            for env in range(n_envs):
+                polid = next(polid for polid, envs in enumerate(policy_agent_indexes) if env in envs)
+                current_rewards[polid][env] += rewards[env]
+                current_lengths[polid][env] += 1
+                if episode_counts[env] < episode_count_targets[env]:
+                    # unpack values so that the callback can access the local variables
+                    reward = rewards[env]
+                    done = dones[env]
+                    info = infos[env]
+                    episode_starts[env] = done
+
+                    if callback is not None:
+                        callback(locals(), globals())
+
+                    if dones[env]:
+                        if is_monitor_wrapped:
+                            # Atari wrapper can send a "done" signal when
+                            # the agent loses a life, but it does not correspond
+                            # to the true end of episode
+                            if "episode" in info.keys():
+                                # Do not trust "done" with episode endings.
+                                # Monitor wrapper includes "episode" key in info if environment
+                                # has been wrapped with it. Use those rewards instead.
+                                episode_rewards[polid].append(info["episode"]["r"])
+                                episode_lengths[polid].append(info["episode"]["l"])
+                                # Only increment at the real end of an episode
+                                episode_counts[env] += 1
+                        else:
+                            episode_rewards[polid].append(current_rewards[polid][env])
+                            episode_lengths[polid].append(current_lengths[polid][env])
+                            episode_counts[env] += 1
+                        current_rewards[polid][env] = 0
+                        current_lengths[polid][env] = 0
+
+            observations = new_observations
+
+            if render:
+                env.render()
+
+        mean_reward = [np.mean(episode_reward) for episode_reward in episode_rewards]  # num_policies long
+        std_reward = [np.std(episode_reward) for episode_reward in episode_rewards]
+        if reward_threshold is not None:
+            assert mean_reward > reward_threshold, "Mean reward below threshold: " f"{mean_reward:.2f} < {reward_threshold:.2f}"
+        if return_episode_rewards:
+            return episode_rewards, episode_lengths
+        return mean_reward, std_reward
 

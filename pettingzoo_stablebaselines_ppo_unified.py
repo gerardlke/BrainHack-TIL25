@@ -9,8 +9,9 @@ from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 from stable_baselines3.common.env_util import make_vec_env
 import torch
 import os
+import copy
 from einops import rearrange
-
+from custom_eval_callback import CustomEvalCallback
 # from til_environment.training_gridworld import env
 from pettingzoo.utils.conversions import aec_to_parallel
 from til_environment.types import Action, Direction, Player, RewardNames, Tile, Wall
@@ -67,8 +68,8 @@ GLOB_ENV = 'binary_viewcone'
 # GLOB_ENV = 'normal'
 GLOB_DEBUG = False
 EXPERIMENT_NAME = 'novice_ppo_long_binaryenv_varyall'
-root_dir = "/home/jovyan/interns/ben/BrainHack-TIL25"
-# root_dir = "/mnt/e/BrainHack-TIL25"
+# root_dir = "/home/jovyan/interns/ben/BrainHack-TIL25"
+root_dir = "/mnt/e/BrainHack-TIL25"
 
 
 def make_new_vec_gridworld(
@@ -89,7 +90,7 @@ def make_new_vec_gridworld(
         env_type=env_type,
         env_wrappers=[],
         render_mode=render_mode,
-        novice=GLOB_NOVICE,
+        novice=novice,
         rewards_dict=rewards_dict,
         reward_names=reward_names,
         num_iters=num_iters,
@@ -110,23 +111,25 @@ def train(config):
     Main training function. Instantiates evaluation and training environments, model, and calls learn.
     Configurations from ray tune's hyperparam search space are thrown in here via config (a dictionary.)
     """
-    num_vec_envs = 4
-    frame_stack_size = config.pop('frame_stack_size')
-    n_steps = config.pop('n_steps')
+    copy_config = copy.deepcopy(config)
+    num_vec_envs = 2
+    frame_stack_size = copy_config.pop('frame_stack_size')
+    n_steps = copy_config.pop('n_steps')
     total_timesteps = 2_000_000
     training_iters = int(total_timesteps / n_steps)
     
-    GUARD_CAPTURES = config.pop('guard_captures', 50)
-    SCOUT_CAPTURED = config.pop('scout_captured', -50)
-    SCOUT_RECON = config.pop('scout_recon', 1)
-    SCOUT_MISSION = config.pop('scout_mission', 5)
-    WALL_COLLISION = config.pop('wall_collision', 0)
-    STATIONARY_PENALTY = config.pop('stationary_penalty', 0)
-    SCOUT_STEP_EMPTY_TILE = config.pop('scout_step_empty_tile', 0)
-    LOOKING = config.pop('looking', 0)
+    GUARD_CAPTURES = copy_config.pop('guard_captures', 50)
+    SCOUT_CAPTURED = copy_config.pop('scout_captured', -50)
+    SCOUT_RECON = copy_config.pop('scout_recon', 1)
+    SCOUT_MISSION = copy_config.pop('scout_mission', 5)
+    WALL_COLLISION = copy_config.pop('wall_collision', 0)
+    STATIONARY_PENALTY = copy_config.pop('stationary_penalty', 0)
+    SCOUT_STEP_EMPTY_TILE = copy_config.pop('scout_step_empty_tile', 0)
+    LOOKING = copy_config.pop('looking', 0)
 
-    num_iters = config.pop('num_iters', GLOB_NUM_ITERS)
-    novice = config.pop('novice', GLOB_ENV)
+    num_iters = copy_config.pop('num_iters', GLOB_NUM_ITERS)
+    novice = copy_config.pop('novice', GLOB_ENV)
+    eval_mode = copy_config.pop('distance_penalty', False)
     REWARDS_DICT = {
         CustomRewardNames.GUARD_CAPTURES: GUARD_CAPTURES,
         CustomRewardNames.SCOUT_CAPTURED: SCOUT_CAPTURED,
@@ -146,27 +149,29 @@ def train(config):
         env_type=GLOB_ENV,
         novice=novice,
         num_iters=num_iters,
+        eval=eval_mode,
         frame_stack_size=frame_stack_size,)
 
     trial_name = session.get_trial_name()
     trial_code = trial_name[:-6]
-
+    eval_log_path = f"{root_dir}/ppo_logs/{trial_code}/{trial_name}"
     model = ModifiedPPO(
         policy="MlpPolicy",
         n_steps=n_steps,
         env=train_vec_env,
         verbose=1,
-        tensorboard_log=f"{root_dir}/ppo_logs/{trial_code}/{trial_name}",
-        **config
+        tensorboard_log=eval_log_path,
+        **copy_config
     )
-
+    eval_env_type = GLOB_ENV
+    # constraints: eval mode on, standard rewards dict, 1 vector env, 100 iters, novice
     _, eval_env = make_new_vec_gridworld(
         reward_names=CustomRewardNames,
         rewards_dict=STD_REWARDS_DICT,
         render_mode=None,
         # render_mode='rgb_array',
         num_vec_envs=1,
-        env_type=GLOB_ENV,
+        env_type=eval_env_type,
         novice=True,
         eval=True,
         num_iters=100,
@@ -177,16 +182,13 @@ def train(config):
     # this is all under the assumption that we do about 100 evaluations and checkpoints
     # per run.
     # divide by number of evals you want to run.
-    num_evals = 100
-    eval_freq = int(max(training_iters / num_evals, 1)) * n_steps
-    print('eval_freq', eval_freq)
+    num_evals = 50
+    eval_freq = int(max(training_iters / num_evals / 4, 1)) * n_steps  # cuz parallel env
 
-    eval_log_path = f"{root_dir}/ppo_logs/{trial_name}"
-    
     checkpoint_callback = CheckpointCallback(
         save_freq=eval_freq,
-        save_path=f"{root_dir}/checkpoints/{trial_name}",
-        name_prefix=f"{EXPERIMENT_NAME}_novice_{GLOB_NOVICE}_run_{trial_name}"
+        save_path=f"{root_dir}/checkpoints/{trial_code}/{trial_name}",
+        name_prefix=f"{EXPERIMENT_NAME}"
         )
     no_improvement = StopTrainingOnNoModelImprovement(
         max_no_improvement_evals=15,
@@ -197,7 +199,8 @@ def train(config):
         reward_threshold=100.0,
         verbose=1
     )
-    eval_callback = EvalCallback(
+    eval_callback = CustomEvalCallback(
+        in_bits=True if eval_env_type == 'binary_viewcone' else False,  # TODO this is really bad code
         eval_freq=eval_freq,
         eval_env=eval_env,                    
         n_eval_episodes=20,
@@ -226,17 +229,36 @@ def train(config):
 
     # load from the save path of the eval callback.
     # for now, just take mean of guard and scout scores instead of seperating them.
+    mean_policy_scores = []
+    for polid in range(2):
+        path = os.path.join(eval_log_path, "evaluations", f"polid_{polid}.npz")
+        thing = np.load(path)
+        mean_scores = np.mean(thing['results'], axis=-1)
+        max_mean_eval = np.max(mean_scores)
+        mean_policy_scores.append(max_mean_eval)
 
-    path = os.path.join(eval_log_path, "evaluations.npz")
-    thing = np.load(path)
-    mean_scores = np.mean(thing['results'], axis=-1)
-    max_mean_eval = np.max(mean_scores)
+    mean_guard_scores = mean_policy_scores[0]
+    mean_scout_scores = mean_policy_scores[1]
+    mean_all_scores = (mean_scout_scores + mean_guard_scores) / 2
 
     tune.report(
         dict(
-            mean_all_score=max_mean_eval,
+            mean_guard_scores=mean_guard_scores,
+            mean_scout_scores=mean_scout_scores,
+            mean_all_score=mean_all_scores,
         )
     )
+
+    # path = os.path.join(eval_log_path, "evaluations.npz")
+    # thing = np.load(path)
+    # mean_scores = np.mean(thing['results'], axis=-1)
+    # max_mean_eval = np.max(mean_scores)
+
+    # tune.report(
+    #     dict(
+    #         mean_all_score=max_mean_eval,
+    #     )
+    # )
 
 if __name__ == "__main__":
     import argparse
@@ -260,7 +282,7 @@ if __name__ == "__main__":
         hyperparam_mutations={
                 "learning_rate": tune.loguniform(5e-4, 1e-3),
                 "gamma": tune.choice([0.90, 0.99]),
-                "n_steps": tune.choice([128, 2048]),
+                "n_steps": tune.choice([128, 512, 2048]),
                 "batch_size": tune.choice([32, 64]),
                 "n_epochs": tune.choice([5, 7, 10]),
                 "vf_coef": tune.uniform(0.30, 0.70),
@@ -268,10 +290,11 @@ if __name__ == "__main__":
                 "gae_lambda": tune.uniform(0.90, 0.99),
                 "frame_stack_size": tune.choice([8, 16, 32]),
                 "novice": tune.choice([False, True]),
-                # "num_iters": tune.choice([100, 300, 1000]),
+                "distance_penalty": tune.choice([False, True]),
+                "num_iters": tune.choice([100, 300, 1000]),
                 "guard_captures": tune.choice([20, 50, 200]),
                 "scout_captured": tune.choice([-20, -50, -200]),
-                "scout_recon": tune.choice([0.5, 2]),
+                "scout_recon": tune.choice([1, 2]),
                 "scout_mission": tune.choice([5, 10, 20]),
                 "scout_step_empty_tile": tune.choice([-5, -2, 0]),
                 "wall_collision": tune.choice([-5, -2, 0]),
@@ -279,7 +302,7 @@ if __name__ == "__main__":
                 "looking": tune.choice([-0.5, -0.2, 0]),
             })
         tuner = Tuner(
-            tune.with_resources(train, resources={"cpu": 10}),
+            tune.with_resources(train, resources={"cpu": 8}),
             tune_config=tune.TuneConfig(
                 scheduler=pbt,
                 num_samples=10000,
@@ -302,18 +325,22 @@ if __name__ == "__main__":
             rewards_dict=STD_REWARDS_DICT,
             render_mode='human',
             num_vec_envs=1,
-            env_type=GLOB_ENV,
+            env_type='normal',
             eval=True,
             frame_stack_size=16,
         )
-        path = "/mnt/e/BrainHack-TIL25/checkpoints/train_0236b_00001/novice_ppo_long_binaryenv_varyall_novice_True_run_train_0236b_00001_1916928_steps.zip"
+        path = "/mnt/e/BrainHack-TIL25/checkpoints/" \
+            "train_0bf0b_00008/" \
+                "novice_ppo_long_binaryenv_varyall_novice_True_run_train_0bf0b_00008_3932160_steps"
         model = PPO.load(
             path = path
         )
 
-        def stack_frames(past_obs, curr_obs, observation_space):
+        def stack_frames(past_obs, observation, observation_space):
+            size = observation.shape[0]
+            tile = int(observation_space.shape[0] / observation.shape[0])
             if past_obs is None:
-                past_obs = np.tile(curr_obs, observation_space)
+                past_obs = np.tile(observation, tile)
             else:
                 past_obs[:-size] = past_obs[size:]  # shifts all to the back
                 past_obs[-size:] = observation  # adds most recent observation first
@@ -322,41 +349,37 @@ if __name__ == "__main__":
 
 
         NUM_ROUNDS = 8
-        past_obs = None
+        rewards = {agent: 0 for agent in gridworld.possible_agents}
         for _ in range(NUM_ROUNDS):
             gridworld.reset()
-            rewards = {agent: 0 for agent in gridworld.possible_agents}
 
+            # reset frame stacks.
+            past_obs = {agent: None for agent in gridworld.agents}
             for agent in gridworld.agent_iter():
                 observation, reward, termination, truncation, info = gridworld.last()
-
-                # which is the scout
-                observation = rearrange(observation, 
-                    '(C R B) -> B C R', 
-                    R=5, C=7, B=8)
-                is_scout = observation[5, 2, 2]
 
                 for a in gridworld.agents:
                     rewards[a] += gridworld.rewards[a]
 
                 if termination or truncation:
                     action = None
-                elif is_scout == 1:
-                    # run scout model for now only?
-                    stack_frames(past_obs, observation, model.observation_space)
-                    
-                    action, _ = model.predict(past_obs, deterministic=False)
-                    print('scout action', action)
-                elif is_scout == 0:
-                    action = np.random.randint(0, 5)
-                    print('guard action', action)
+                else:
+                    if True:
+                        agent_past_obs = past_obs[agent]
+                        agent_past_obs = stack_frames(agent_past_obs, observation, model.observation_space)
+                        past_obs[agent] = agent_past_obs
 
-                print(action)
+                        action, _ = model.predict(agent_past_obs, deterministic=False)
+
+                    else:
+                        action = np.random.randint(0, 5)
+
                 gridworld.step(action)
             # past_obs = 
 
         gridworld.close()
         print(f"total rewards: {rewards}")
+        print(f"avg rewards:", {k: reward / NUM_ROUNDS for k, reward in rewards.items()})
 
 
 

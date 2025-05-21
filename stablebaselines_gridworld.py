@@ -13,6 +13,7 @@ import time
 import gymnasium
 import numpy as np
 import pygame
+from collections import defaultdict
 from gymnasium.spaces import Box, Dict, Discrete
 from gymnasium.utils.seeding import np_random
 from mazelib import Maze
@@ -106,7 +107,7 @@ class normal_env(raw_env):
         self.reward_names = reward_names
         self.rewards_dict = rewards_dict
         self.eval = eval
-
+        self.prev_distances = {agent: None for agent in self.possible_agents[:]}
         # Generate 32 bytes of random data
         random_bytes = os.urandom(32)
         # Hash it with SHA-256
@@ -339,8 +340,13 @@ class normal_env(raw_env):
         if agent != self.scout and not self.eval:
             # we now give guards negative rewards, based on their distance to the scout
             distance = self.get_info(agent)['euclidean']
-            # negative of distance as reward increment? 
-            self.rewards[agent] += -distance / 5  # probably divide it so the poor guard doesnt explode
+            if self.prev_distances[agent] is not None:
+                diff = abs(self.prev_distances[agent] - distance)
+            else:
+                diff = 0
+            self.prev_distances[agent] = distance
+            # negative of distance differences as reward increment? 
+            self.rewards[agent] += -diff 
 
         return None
     

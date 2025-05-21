@@ -1,0 +1,10 @@
+til submit runs docker tag, docker push, and gcloud ai models upload
+
+tag:
+asia-southeast1-docker.pkg.dev/til-ai-2025/mcdonalds-workers-repo-til-25/mcdonalds-workers-rl:0.0.1
+
+docker push asia-southeast1-docker.pkg.dev/til-ai-2025/mcdonalds-workers-repo-til-25/mcdonalds-workers-rl:0.0.1
+
+gcloud ai models upload:
+
+gcloud ai models upload --region asia-southeast1 --display-name test_rl --container-image-uri asia-southeast1-docker.pkg.dev/til-ai-2025/mcdonalds-workers-repo-til-25/mcdonalds-workers-rl:0.0.1 --container-health-route /health --container-predict-route /rl --container-ports 5004 --version-aliases default --project til-ai-25 --access-token-file E:/BrainHack-TIL25/auth_file
