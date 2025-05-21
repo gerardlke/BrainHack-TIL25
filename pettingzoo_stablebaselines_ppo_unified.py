@@ -191,8 +191,8 @@ def train(config):
         name_prefix=f"{EXPERIMENT_NAME}"
         )
     no_improvement = StopTrainingOnNoModelImprovement(
-        max_no_improvement_evals=15,
-        min_evals=20,
+        max_no_improvement_evals=5,
+        min_evals=5,
         verbose=1
     )
     above_reward = StopTrainingOnRewardThreshold(

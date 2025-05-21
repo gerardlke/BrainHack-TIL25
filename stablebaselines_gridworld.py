@@ -324,6 +324,7 @@ class normal_env(raw_env):
                         self.rewards[self.scout] += self.rewards_dict.get(
                             self.reward_names.SCOUT_STEP_EMPTY_TILE, 0
                         )
+            return collision
         if _action in (Action.LEFT, Action.RIGHT):
             # update direction of agent, right = +1 and left = -1 (which is equivalent to +3), mod 4.
             self.agent_directions[agent] = (
