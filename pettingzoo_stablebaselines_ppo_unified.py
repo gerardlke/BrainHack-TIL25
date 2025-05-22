@@ -67,7 +67,7 @@ GLOB_NOVICE = True
 GLOB_ENV = 'binary_viewcone'
 # GLOB_ENV = 'normal'
 GLOB_DEBUG = False
-EXPERIMENT_NAME = 'novice_ppo_long_binaryenv_varyall'
+EXPERIMENT_NAME = 'novice_ppo_20mil_binaryenv_varyall'
 # root_dir = "/home/jovyan/interns/ben/BrainHack-TIL25"
 root_dir = "/mnt/e/BrainHack-TIL25"
 
@@ -99,7 +99,7 @@ def make_new_vec_gridworld(
     )
 
     parallel_gridworld = aec_to_parallel(gridworld)
-    frame_stack = ss.frame_stack_v2(parallel_gridworld, stack_size=16, stack_dim=0)
+    frame_stack = ss.frame_stack_v2(parallel_gridworld, stack_size=frame_stack_size, stack_dim=0)
     vec_env = ss.pettingzoo_env_to_vec_env_v1(frame_stack)
     vec_env = ss.concat_vec_envs_v1(vec_env, num_vec_envs=num_vec_envs, num_cpus=2, base_class='stable_baselines3')
 
@@ -115,7 +115,7 @@ def train(config):
     num_vec_envs = 2
     frame_stack_size = copy_config.pop('frame_stack_size')
     n_steps = copy_config.pop('n_steps')
-    total_timesteps = 2_000_000
+    total_timesteps = 20_000_000
     training_iters = int(total_timesteps / n_steps)
     
     GUARD_CAPTURES = copy_config.pop('guard_captures', 50)
@@ -203,7 +203,7 @@ def train(config):
         in_bits=True if eval_env_type == 'binary_viewcone' else False,  # TODO this is really bad code
         eval_freq=eval_freq,
         eval_env=eval_env,                    
-        n_eval_episodes=20,
+        n_eval_episodes=30,
         log_path=eval_log_path,
         callback_after_eval=no_improvement,
         callback_on_new_best=above_reward,
@@ -281,28 +281,28 @@ if __name__ == "__main__":
         perturbation_interval=5,  # every n trials
         hyperparam_mutations={
                 "learning_rate": tune.loguniform(5e-4, 1e-3),
-                "gamma": tune.choice([0.90, 0.99]),
-                "n_steps": tune.choice([128, 512, 2048]),
+                "gamma": tune.uniform(0.80, 0.99),
+                "n_steps": tune.choice([1024, 2048, 4096]),
                 "batch_size": tune.choice([32, 64]),
                 "n_epochs": tune.choice([5, 7, 10]),
-                "vf_coef": tune.uniform(0.30, 0.70),
-                "ent_coef": tune.loguniform(1e-5, 1e-2),
-                "gae_lambda": tune.uniform(0.90, 0.99),
-                "frame_stack_size": tune.choice([8, 16, 32]),
-                "novice": tune.choice([False, True]),
-                "distance_penalty": tune.choice([False, True]),
+                "vf_coef": tune.uniform(0.35, 0.50),
+                "ent_coef": tune.loguniform(1e-6, 1e-4),
+                "gae_lambda": tune.uniform(0.80, 0.99),
+                "frame_stack_size": tune.choice([4, 8, 16]),
+                "novice": tune.choice([True]),
+                "distance_penalty": tune.choice([False]),
                 "num_iters": tune.choice([100, 300, 1000]),
-                "guard_captures": tune.choice([20, 50, 200]),
+                "guard_captures": tune.choice([50, 200, 500]),
                 "scout_captured": tune.choice([-20, -50, -200]),
                 "scout_recon": tune.choice([1, 2]),
                 "scout_mission": tune.choice([5, 10, 20]),
-                "scout_step_empty_tile": tune.choice([-5, -2, 0]),
-                "wall_collision": tune.choice([-5, -2, 0]),
-                "stationary_penalty": tune.choice([-5, -2, 0]),
+                "scout_step_empty_tile": tune.choice([-2, -1, 0]),
+                "wall_collision": tune.choice([-2, -1, 0]),
+                "stationary_penalty": tune.choice([-2, -1, 0]),
                 "looking": tune.choice([-0.5, -0.2, 0]),
             })
         tuner = Tuner(
-            tune.with_resources(train, resources={"cpu": 8}),
+            tune.with_resources(train, resources={"cpu": 5}),
             tune_config=tune.TuneConfig(
                 scheduler=pbt,
                 num_samples=10000,
@@ -330,8 +330,8 @@ if __name__ == "__main__":
             frame_stack_size=16,
         )
         path = "/mnt/e/BrainHack-TIL25/checkpoints/" \
-            "train_0bf0b_00008/" \
-                "novice_ppo_long_binaryenv_varyall_novice_True_run_train_0bf0b_00008_3932160_steps"
+            "train_a3a30_00029/" \
+                "novice_ppo_long_binaryenv_varyall_851968_steps"
         model = PPO.load(
             path = path
         )
