@@ -1,6 +1,7 @@
 """
 Yoink from gridworld.py, but inherit gynasium.Env to integrate with ray rllib
 """
+import supersuit as ss
 import functools
 import logging
 import warnings
@@ -9,7 +10,7 @@ import os
 import hashlib
 import cv2
 import time
-
+from pettingzoo.utils.conversions import aec_to_parallel
 import gymnasium
 import numpy as np
 import pygame
@@ -45,19 +46,37 @@ from til_environment.gridworld import raw_env
 
 
 def build_env(
+    num_vec_envs,
     reward_names,
     rewards_dict,
     env_wrappers: list[BaseWrapper] | None = None,
     render_mode: str | None = None,
     env_type: str = 'normal',
-    eval: bool = False,
+    eval_mode: bool = False,
+    novice: bool = True,
+    debug: bool = False,
+    frame_stack_size: int = 4,
     **kwargs,
 ):
     """
-    Main entrypoint to the environment, allowing configuration of render mode
-    and what wrappers to wrap around the environment. If you write a custom
-    wrapper(s), pass them in a list to `env_wrappers`.
-    See `flatten_dict.FlattenDictWrapper` for a very simple wrapper example.
+    Define configurations of our environment.
+
+    Args:
+        - reward_names: customized RewardNames class to pass to the class init
+        - rewards_dict: rewards dictionary to specify exactly what values
+        - env_wrappers: list of other env wrappers before we parallelize, framestack and vectorize
+            the environment
+        - num_vec_envs: number of vector environments to stack
+        - render_mode: How to render the environment (should be none during training unless you are trying to
+            debug)
+        - env_type: right now only supports 'binary_viewcone' or 'normal'.
+        - eval_mode: Boolean to set environment to eval mode; this will remove things like 
+            automatic guard distance penalties from being applied.
+        - novice: True or False, are we making novice env
+        - debug: Enable debug mode for environments, which can offer insight into
+            its inner workings
+        - frame_stack_size: how many past frames to stack, mutates the observation space
+        **kwargs: other kwargs to pass to the environment class
     """
     if env_type == 'normal':
         to_build = normal_env
@@ -65,27 +84,35 @@ def build_env(
         to_build = binary_viewcone_env
     else:
         raise AssertionError('not accepted env_type.')
-    print('env_type', env_type)
+
     env = to_build(
         render_mode=render_mode,
         reward_names=reward_names,
         rewards_dict=rewards_dict,
-        eval=eval,
+        eval=eval_mode,
+        novice=novice,
+        debug=debug,
         **kwargs
     )
-    print('ENV NOVICE??????????????', env.novice)
+
     if env_wrappers is None:
         env_wrappers = [
             FlattenDictWrapper,
-            partial(frame_stack_v2, stack_size=4, stack_dim=-1),
         ]
+        print('YES USING FLATTENDICTWRAPPER')
     for wrapper in env_wrappers:
-        env = wrapper(env)
+        env = wrapper(env)  # type: ignore
     # this wrapper helps error handling for discrete action spaces
     env = wrappers.AssertOutOfBoundsWrapper(env)
     # Provides a wide variety of helpful user errors
     env = wrappers.OrderEnforcingWrapper(env)
-    return env
+
+    parallel_env = aec_to_parallel(env)
+    frame_stack = ss.frame_stack_v2(parallel_env, stack_size=frame_stack_size, stack_dim=0)
+    vec_env = ss.pettingzoo_env_to_vec_env_v1(frame_stack)
+    vec_env = ss.concat_vec_envs_v1(vec_env, num_vec_envs=num_vec_envs, num_cpus=4, base_class='stable_baselines3')
+
+    return env, vec_env
 
 """
 TODO: things to try for our environments:
@@ -98,7 +125,8 @@ class normal_env(raw_env):
     """
     yoink provided env and add some stuff to it
 
-    Base, standard training env.
+    Base, standard training env. We disable different agent selection  as we would like to fix the indexes of
+    the scout and guards, so that we can 
     """
     def __init__(self, reward_names, rewards_dict, num_iters=1000, eval=False, **kwargs):
         # self.rewards_dict is defined in super init call
@@ -110,8 +138,22 @@ class normal_env(raw_env):
         self.prev_distances = {agent: None for agent in self.possible_agents[:]}
         # Generate 32 bytes of random data
         random_bytes = os.urandom(32)
-        # Hash it with SHA-256
+        # Hash it with SHA-256, so each env can have its own unique identifier
         self.hash = hashlib.sha256(random_bytes).hexdigest()
+        
+        # because cyclical player shuffling is disabled for this environment, we call this here and never again.
+        self._scout = self._scout_selector.next()
+        # we can use _scout to check against the latest scout attribute, which allows us to pick up any changes in
+        # the scout id. This functionality has not been implemented yet.
+        self.scout = self._scout
+
+        # it is the environment's job to hold the state of which policies map to which agents to which policy.
+        # normally it should be defined here.
+        # however, one might notice that the below is hardcoded. this is intentional, as we lock the scout to always be
+        # the first player (0th index).
+        self.policy_mapping = [0] * 4
+        self.policy_mapping[0] = 1
+
 
     def _render_frame(self):
         if self.window is None and self.render_mode in self.metadata["render_modes"]:
@@ -374,6 +416,7 @@ class normal_env(raw_env):
         Takes in an action for the current agent (specified by agent_selection),
         only updating internal environment state when all actions have been received.
         """
+        render_outputs = None
         if self.agent_selector.is_first():
             # clear actions from previous round
             self.actions = {}
@@ -429,7 +472,7 @@ class normal_env(raw_env):
 
             # render
             if self.render_mode in self.metadata["render_modes"]:
-                self.render()
+                render_outputs = self.render()
         else:
             # no rewards are allocated until all players give an action
             self._clear_rewards()
@@ -439,26 +482,13 @@ class normal_env(raw_env):
         # Adds .rewards to ._cumulative_rewards
         self._accumulate_rewards()
 
+        return render_outputs
+
     @functools.lru_cache(maxsize=None)
     def observation_space(self, agent: AgentID):
-        # return Dict(
-        #     {
-        #         "viewcone": Box(
-        #             0,
-        #             2**8 - 1,
-        #             shape=(
-        #                 self.viewcone_length,
-        #                 self.viewcone_width,
-        #             ),
-        #             dtype=np.int64,
-        #         ),
-        #         "direction": Discrete(len(Direction)),
-        #         "scout": Discrete(2),
-        #         "location": Box(0, self.size, shape=(2,), dtype=np.int64),
-        #         "step": Discrete(self.num_iters),
-        #     }
-        # )
-        return Box(
+        return Dict(
+            {
+                "viewcone": Box(
                     0,
                     2**8 - 1,
                     shape=(
@@ -466,7 +496,13 @@ class normal_env(raw_env):
                         self.viewcone_width,
                     ),
                     dtype=np.int64,
-                )
+                ),
+                "direction": Discrete(len(Direction)),
+                "scout": Discrete(2),
+                "location": Box(0, self.size, shape=(2,), dtype=np.int64),
+                "step": Discrete(self.num_iters + 1),
+            }
+        )
     
     def reset(self, seed=None, options=None):
         """
@@ -479,12 +515,16 @@ class normal_env(raw_env):
         if self._np_random is None or seed is not None:
             self._init_random(seed)
 
-        # agent_selector utility cyclically steps through agents list
+        # As you can see, cyclical agent selection of scout has been disabled, to maintain the indexes of scout
+        # i.e player_0 is always scout
         self.agents = self.possible_agents[:]
         self.agent_selector = AgentSelector(self.agents)
         self.agent_selection = self.agent_selector.next()
+
+        # here is the original code swapping scouts around
         # select the next player to be the scout
-        self.scout: AgentID = self._scout_selector.next()
+        # self.scout: AgentID = self._scout_selector.next()
+        
         # generate arena for each match for advanced track
         if self._arena is None or (self._scout_selector.is_first() and not self.novice):
             self._generate_arena()
@@ -527,13 +567,13 @@ class normal_env(raw_env):
                 ))
                 # gsdfSGdFGF
 
-    def observe(self, agent):
-        # run super method, but prune to only return the viewcone observation.
-        # this will break rendering for now.
-        observations = super().observe(agent)
-        # print('obs', observations)
-        # print('returning viewcone', observations['viewcone'])
-        return observations['viewcone']
+    # def observe(self, agent):
+    #     # run super method, but prune to only return the viewcone observation.
+    #     # this will break rendering for now.
+    #     observations = super().observe(agent)
+    #     # print('obs', observations)
+    #     # print('returning viewcone', observations['viewcone'])
+    #     return observations['viewcone']
         
 class binary_viewcone_env(normal_env):
     # yoink brainhack code but change some tings

@@ -1,0 +1,48 @@
+# environment configurations here
+# seperate train and eval env
+env:
+  train:
+    # rewards:
+    num_vec_envs: 4
+    env_type: 'normal'
+    novice: True
+    num_iters: 100
+    eval_mode: True
+    frame_stack_size: 4
+    render_mode:
+
+
+  eval:
+    # rewards:
+    num_vec_envs: 4
+    env_type: 'normal'
+    novice: True
+    num_iters: 100
+    eval_mode: True
+    frame_stack_size: 4
+    render_mode:
+
+
+
+
+
+
+# the actual mapping from agents to policies is independent of policy configurations
+policies:
+  0:
+    policy: ModifiedPPO
+    something_attribute: something
+    another_attribute: another thing
+
+  1: 
+    policy: ModifiedPPO
+    something_attribute_but_id_1: something else
+    another_attribute_but_id_1: another thing else
+
+  
+train:
+  # all callbacks and their configurations here
+  callbacks:
+
+
+  # other training configurations

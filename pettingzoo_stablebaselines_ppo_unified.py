@@ -64,46 +64,13 @@ STD_REWARDS_DICT = {
 
 GLOB_NUM_ITERS = 100
 GLOB_NOVICE = True
-GLOB_ENV = 'binary_viewcone'
-# GLOB_ENV = 'normal'
+# GLOB_ENV = 'binary_viewcone'
+GLOB_ENV = 'normal'
 GLOB_DEBUG = False
-EXPERIMENT_NAME = 'novice_ppo_20mil_binaryenv_varyall'
-# root_dir = "/home/jovyan/interns/ben/BrainHack-TIL25"
-root_dir = "/mnt/e/BrainHack-TIL25"
+EXPERIMENT_NAME = 'novice_ppo_long_binaryenv_worldmodel'
+root_dir = "/home/jovyan/interns/ben/BrainHack-TIL25"
+# root_dir = "/mnt/e/BrainHack-TIL25"
 
-
-def make_new_vec_gridworld(
-    rewards_dict,
-    reward_names,
-    render_mode=None,
-    env_type='normal',
-    num_vec_envs=1,
-    frame_stack_size=4,
-    num_iters=GLOB_NUM_ITERS,
-    eval=False,
-    novice=True,
-    ):
-    """
-    Helper func to build gridworld into a vectorized form. Will also return original AEC env for evaluation too, so dont worry
-    """
-    gridworld = build_env(
-        env_type=env_type,
-        env_wrappers=[],
-        render_mode=render_mode,
-        novice=novice,
-        rewards_dict=rewards_dict,
-        reward_names=reward_names,
-        num_iters=num_iters,
-        debug=GLOB_DEBUG,
-        eval=eval,
-    )
-
-    parallel_gridworld = aec_to_parallel(gridworld)
-    frame_stack = ss.frame_stack_v2(parallel_gridworld, stack_size=frame_stack_size, stack_dim=0)
-    vec_env = ss.pettingzoo_env_to_vec_env_v1(frame_stack)
-    vec_env = ss.concat_vec_envs_v1(vec_env, num_vec_envs=num_vec_envs, num_cpus=2, base_class='stable_baselines3')
-
-    return gridworld, vec_env
 
 
 def train(config):
@@ -115,7 +82,7 @@ def train(config):
     num_vec_envs = 2
     frame_stack_size = copy_config.pop('frame_stack_size')
     n_steps = copy_config.pop('n_steps')
-    total_timesteps = 20_000_000
+    total_timesteps = 5_000_000
     training_iters = int(total_timesteps / n_steps)
     
     GUARD_CAPTURES = copy_config.pop('guard_captures', 50)
@@ -140,7 +107,7 @@ def train(config):
         CustomRewardNames.SCOUT_STEP_EMPTY_TILE: SCOUT_STEP_EMPTY_TILE,
         CustomRewardNames.LOOKING: LOOKING,
     }
-    _, train_vec_env = make_new_vec_gridworld(
+    _, train_vec_env = build_env(
         reward_names=CustomRewardNames,
         rewards_dict=REWARDS_DICT,
         render_mode=None,
@@ -149,8 +116,8 @@ def train(config):
         env_type=GLOB_ENV,
         novice=novice,
         num_iters=num_iters,
-        eval=eval_mode,
-        frame_stack_size=frame_stack_size,)
+        eval_mode=eval_mode,
+        frame_stack_size=4,)
 
     trial_name = session.get_trial_name()
     trial_code = trial_name[:-6]
@@ -165,7 +132,7 @@ def train(config):
     )
     eval_env_type = GLOB_ENV
     # constraints: eval mode on, standard rewards dict, 1 vector env, 100 iters, novice
-    _, eval_env = make_new_vec_gridworld(
+    _, eval_env = build_env(
         reward_names=CustomRewardNames,
         rewards_dict=STD_REWARDS_DICT,
         render_mode=None,
@@ -173,17 +140,18 @@ def train(config):
         num_vec_envs=1,
         env_type=eval_env_type,
         novice=True,
-        eval=True,
+        eval_mode=True,
         num_iters=100,
-        frame_stack_size=frame_stack_size,
+        frame_stack_size=4,
     )
 
     # initialize callbacks 
     # this is all under the assumption that we do about 100 evaluations and checkpoints
     # per run.
     # divide by number of evals you want to run.
-    num_evals = 50
-    eval_freq = int(max(training_iters / num_evals / 4, 1)) * n_steps  # cuz parallel env
+    num_evals = 150
+    # eval_freq = int(max(training_iters / num_evals / 4, 1)) * n_steps  # cuz parallel env
+    eval_freq = 1
 
     checkpoint_callback = CheckpointCallback(
         save_freq=eval_freq,
@@ -237,8 +205,8 @@ def train(config):
         max_mean_eval = np.max(mean_scores)
         mean_policy_scores.append(max_mean_eval)
 
-    mean_guard_scores = mean_policy_scores[0]
-    mean_scout_scores = mean_policy_scores[1]
+    mean_guard_scores = mean_policy_scores[0] * 3
+    mean_scout_scores = mean_policy_scores[1] 
     mean_all_scores = (mean_scout_scores + mean_guard_scores) / 2
 
     tune.report(
@@ -302,12 +270,12 @@ if __name__ == "__main__":
                 "looking": tune.choice([-0.5, -0.2, 0]),
             })
         tuner = Tuner(
-            tune.with_resources(train, resources={"cpu": 5}),
+            tune.with_resources(train, resources={"cpu": 4}),
             tune_config=tune.TuneConfig(
                 scheduler=pbt,
-                num_samples=10000,
+                num_samples=1,
                 reuse_actors=True,
-                max_concurrent_trials=2,
+                max_concurrent_trials=1,
             ),
             run_config=tune.RunConfig(
                 name=EXPERIMENT_NAME,

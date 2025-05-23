@@ -120,6 +120,10 @@ class ModifiedPPO(PPO):
         # if last_obs is 2 dim, the 1st is likely the env-agent dimension, and the latter is the frame-stacked * original version
         # elif last_obs is 4dim, the 1st is as above, second is the frame-stack dim, and the third is 7, 5 (viewcone dim)
         # TODO: ALL HARDCODED! PLEASE CHANGE THIS (i definitely wont)
+        # print('last obs', last_obs)
+        # print(last_obs[:, :1])
+        # print(last_obs[:, 1:3])
+        # print(last_obs[:, 3:5])
         if len(last_obs.shape) == 2:
             last_obs = rearrange(last_obs, 
                 'A (S C R B) -> A S B C R', 
