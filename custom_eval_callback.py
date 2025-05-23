@@ -489,7 +489,7 @@ class CustomEvalCallback(EventCallback):
         """
         is_monitor_wrapped = False
         observations = _env.reset()
-        policy_agent_indexes = model.get_2_policy_agent_indexes_from_viewcone(last_obs=observations)
+        policy_agent_indexes = model.get_2_policy_agent_indexes_from_obs(last_obs=observations)
 
         # Avoid circular import
         from stable_baselines3.common.monitor import Monitor
@@ -533,7 +533,7 @@ class CustomEvalCallback(EventCallback):
                 deterministic=deterministic,
             )
             new_observations, rewards, dones, infos = _env.step(actions)
-            policy_agent_indexes = model.get_2_policy_agent_indexes_from_viewcone(last_obs=observations)
+            policy_agent_indexes = model.get_2_policy_agent_indexes_from_obs(last_obs=observations)
 
             for env in range(n_envs):
                 polid = next(polid for polid, envs in enumerate(policy_agent_indexes) if env in envs)

@@ -115,15 +115,38 @@ class ModifiedPPO(PPO):
 
 
     @staticmethod
-    def get_2_policy_agent_indexes_from_viewcone(last_obs):
-        # very hardcoded solution for now.
-        # if last_obs is 2 dim, the 1st is likely the env-agent dimension, and the latter is the frame-stacked * original version
-        # elif last_obs is 4dim, the 1st is as above, second is the frame-stack dim, and the third is 7, 5 (viewcone dim)
-        # TODO: ALL HARDCODED! PLEASE CHANGE THIS (i definitely wont)
-        # print('last obs', last_obs)
-        # print(last_obs[:, :1])
-        # print(last_obs[:, 1:3])
-        # print(last_obs[:, 3:5])
+    def get_2_policy_agent_indexes_from_obs(last_obs, case, is_binarized):
+        """
+        A rather hardcoded, inflexible function. Currently built to handle for the following cases:
+
+        1. Flattened dictionary  (will need to access hardcoded indexes according to shape)
+        2. Flattened viewcone
+
+        We will also do some checks on stacking, for safety.
+
+        Dimension notation:
+            - A: Env dimension / ParallelEnv * Agent dimension
+            - S: Arbitrary stacking dimension.
+            - B: Binary dimension of viewcone, if the observation converted to bits (should be 8)
+            - C: Column dimension of viewcone
+            - R: Row dimension of viewcone
+            - D: Flattened dictionary dimension of arbitrary size (we assume viewcone is at the end of each flattened dict list)
+        """
+        # hardcoded for viewcone. if this ever fails, goodluck!
+        # TODO: maybe pass all the way from source environment?
+        r = 5
+        c = 7
+        b = 8
+        assert isinstance(is_binarized, bool)
+        assert case in ['flat_dict', 'flat_viewcone'], 'Assertion failed.' \
+            'Case specified is not in the above list of supported observation types.'
+        if case == 'flat_dict':
+            # shape should be A (S D)
+            if is_binarized:
+                last_obs = rearrange(last_obs, 
+                    'A (S D) -> A S D', 
+                    )
+                is_scout = last_obs[:, 0, 5, 2, 2]
         if len(last_obs.shape) == 2:
             last_obs = rearrange(last_obs, 
                 'A (S C R B) -> A S B C R', 

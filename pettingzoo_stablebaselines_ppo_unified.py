@@ -130,7 +130,7 @@ def train(config):
         tensorboard_log=eval_log_path,
         **copy_config
     )
-    eval_env_type = GLOB_ENV
+    eval_env_type = 'binary'
     # constraints: eval mode on, standard rewards dict, 1 vector env, 100 iters, novice
     _, eval_env = build_env(
         reward_names=CustomRewardNames,

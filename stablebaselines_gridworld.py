@@ -80,7 +80,7 @@ def build_env(
     """
     if env_type == 'normal':
         to_build = normal_env
-    elif env_type == 'binary_viewcone':
+    elif env_type == 'binary':
         to_build = binary_viewcone_env
     else:
         raise AssertionError('not accepted env_type.')
@@ -585,32 +585,24 @@ class binary_viewcone_env(normal_env):
         """
         Binary viewcone. must be flattened since after binarizing, result viewcone will be 3D, which will not support frame stacking.
         """
-        # return Dict(
-        #     {
-        #         "viewcone": Box(
-        #             0,
-        #             1,
-        #             shape=(
-        #                 8,  # hardcode lol
-        #                 self.viewcone_length,
-        #                 self.viewcone_width,
-        #             ),
-        #             dtype=np.int64,
-        #         ),
-        #         "direction": Discrete(len(Direction)),
-        #         "scout": Discrete(2),
-        #         "location": Box(0, self.size, shape=(2,), dtype=np.int64),
-        #         "step": Discrete(self.num_iters),
-        #     }
-        # )
-        return Box(
+        return Dict(
+            {
+                "viewcone": Box(
                     0,
                     1,
                     shape=(
-                        8 *self.viewcone_length *self.viewcone_width,
+                        8,  # hardcode lol
+                        self.viewcone_length,
+                        self.viewcone_width,
                     ),
                     dtype=np.int64,
-                )
+                ),
+                "direction": Discrete(len(Direction)),
+                "scout": Discrete(2),
+                "location": Box(0, self.size, shape=(2,), dtype=np.int64),
+                "step": Discrete(self.num_iters),
+            }
+        )
 
     def observe(self, agent):
         """
@@ -649,12 +641,11 @@ class binary_viewcone_env(normal_env):
 
         bit_planes = np.unpackbits(view.astype(np.uint8))  # made R C B into (R C B)
 
-        return bit_planes
-        # return {
-        #     "viewcone": bit_planes,
-        #     "direction": self.agent_directions[agent],
-        #     "location": self.agent_locations[agent],
-        #     "scout": 1 if agent == self.scout else 0,
-        #     "step": self.num_moves,
-        # }
+        return {
+            "viewcone": bit_planes,
+            "direction": self.agent_directions[agent],
+            "location": self.agent_locations[agent],
+            "scout": 1 if agent == self.scout else 0,
+            "step": self.num_moves,
+        }
     
