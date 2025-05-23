@@ -100,13 +100,14 @@ class normal_env(raw_env):
 
     Base, standard training env.
     """
-    def __init__(self, reward_names, rewards_dict, num_iters=1000, eval=False, **kwargs):
+    def __init__(self, reward_names, rewards_dict, num_iters=1000, eval=False, collisions=True, **kwargs):
         # self.rewards_dict is defined in super init call
         super().__init__(**kwargs)
         self.num_iters = num_iters
         self.reward_names = reward_names
         self.rewards_dict = rewards_dict
         self.eval = eval
+        self.collisions = collisions
         self.prev_distances = {agent: None for agent in self.possible_agents[:]}
         # Generate 32 bytes of random data
         random_bytes = os.urandom(32)
@@ -324,7 +325,8 @@ class normal_env(raw_env):
                         self.rewards[self.scout] += self.rewards_dict.get(
                             self.reward_names.SCOUT_STEP_EMPTY_TILE, 0
                         )
-            return collision
+            if self.collisions:
+                return collision
         if _action in (Action.LEFT, Action.RIGHT):
             # update direction of agent, right = +1 and left = -1 (which is equivalent to +3), mod 4.
             self.agent_directions[agent] = (
@@ -338,16 +340,18 @@ class normal_env(raw_env):
             self.rewards[agent] += self.rewards_dict.get(
                 self.reward_names.STATIONARY_PENALTY, 0
             )
-        if agent != self.scout and not self.eval:
+        # if agent != self.scout and not self.eval:
             # we now give guards negative rewards, based on their distance to the scout
-            distance = self.get_info(agent)['euclidean']
-            if self.prev_distances[agent] is not None:
-                diff = abs(self.prev_distances[agent] - distance)
-            else:
-                diff = 0
-            self.prev_distances[agent] = distance
+            # distance = self.get_info(agent)['euclidean']
+            # if self.prev_distances[agent] is not None:
+            #     diff = abs(self.prev_distances[agent] - distance)
+            # else:
+            #     diff = 0
+            # self.prev_distances[agent] = distance
             # negative of distance differences as reward increment? 
-            self.rewards[agent] += -diff 
+            # self.rewards[agent] += -diff 
+            # self.rewards[agent] += distance / 5
+        
 
         return None
     

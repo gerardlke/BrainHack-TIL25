@@ -68,7 +68,6 @@ GLOB_ENV = 'binary_viewcone'
 # GLOB_ENV = 'normal'
 GLOB_DEBUG = False
 EXPERIMENT_NAME = 'novice_ppo_20mil_binaryenv_varyall'
-GLOB_COLLISIONS = True
 # root_dir = "/home/jovyan/interns/ben/BrainHack-TIL25"
 root_dir = "/mnt/e/BrainHack-TIL25"
 
@@ -113,10 +112,10 @@ def train(config):
     Configurations from ray tune's hyperparam search space are thrown in here via config (a dictionary.)
     """
     copy_config = copy.deepcopy(config)
-    num_vec_envs = 2
+    num_vec_envs = 1
     frame_stack_size = copy_config.pop('frame_stack_size')
     n_steps = copy_config.pop('n_steps')
-    total_timesteps = 20_000_000
+    total_timesteps = 10000
     training_iters = int(total_timesteps / n_steps)
     
     GUARD_CAPTURES = copy_config.pop('guard_captures', 50)
@@ -192,8 +191,8 @@ def train(config):
         name_prefix=f"{EXPERIMENT_NAME}"
         )
     no_improvement = StopTrainingOnNoModelImprovement(
-        max_no_improvement_evals=5,
-        min_evals=5,
+        max_no_improvement_evals=50,
+        min_evals=50,
         verbose=1
     )
     above_reward = StopTrainingOnRewardThreshold(
@@ -230,7 +229,7 @@ def train(config):
 
     # load from the save path of the eval callback.
     # for now, just take mean of guard and scout scores instead of seperating them.
-    best_policy_scores = []
+    mean_policy_scores = []
     best_scores_timing = []
     for polid in range(2):
         path = os.path.join(eval_log_path, "evaluations", f"polid_{polid}.npz")
@@ -238,19 +237,19 @@ def train(config):
         mean_scores = np.mean(thing['results'], axis=-1)
         max_mean_eval = np.max(mean_scores)
         max_idx = np.argmax(mean_scores)
-        best_policy_scores.append(max_mean_eval)
+        mean_policy_scores.append(max_mean_eval)
         best_scores_timing.append(thing['timesteps'][max_idx])
 
-    best_guard_scores = best_policy_scores[0]
+    mean_guard_scores = mean_policy_scores[0]
     best_guard_time = best_scores_timing[0]
-    best_scout_scores = best_policy_scores[1]
+    mean_scout_scores = mean_policy_scores[1]
     best_scout_time = best_scores_timing[1]
-    all_scores = best_scout_scores + best_guard_scores
+    all_scores = mean_scout_scores + mean_guard_scores
 
     tune.report(
         dict(
-            best_guard_scores=best_guard_scores,
-            best_scout_scores=best_scout_scores,
+            mean_guard_scores=mean_guard_scores,
+            mean_scout_scores=mean_scout_scores,
             best_guard_time=best_guard_time,
             best_scout_time=best_scout_time,
             all_scores=all_scores,
@@ -290,18 +289,18 @@ if __name__ == "__main__":
         hyperparam_mutations={
                 "learning_rate": tune.loguniform(1e-6, 1e-4),
                 "gamma": tune.uniform(0.80, 0.99),
-                "n_steps": tune.choice([1024, 2048, 4096]),
+                "n_steps": tune.choice([512]),
                 "batch_size": tune.choice([4, 8, 16]),
                 "n_epochs": tune.choice([5, 7, 10]),
                 "vf_coef": tune.uniform(0.35, 0.50),
                 "ent_coef": tune.loguniform(1e-6, 1e-4),
                 "gae_lambda": tune.uniform(0.80, 0.99),
-                "frame_stack_size": tune.choice([1]),
+                "frame_stack_size": tune.choice([4]),
                 "novice": tune.choice([True]),
                 "distance_penalty": tune.choice([False, True]),
                 "num_iters": tune.choice([100, 300, 1000]),
                 # "guard_captures": tune.choice([50, 200, 500]),
-                "scout_captured": tune.choice([-50, -100, -200]),
+                # "scout_captured": tune.choice([-50, -200, -500]),
                 # "scout_recon": tune.choice([1, 2]),
                 # "scout_mission": tune.choice([5, 10, 20]),
                 # "scout_step_empty_tile": tune.choice([-2, -1, 0]),
@@ -310,7 +309,7 @@ if __name__ == "__main__":
                 # "looking": tune.choice([-0.5, -0.2, 0]),
             })
         tuner = Tuner(
-            tune.with_resources(train, resources={"cpu": 5}),
+            tune.with_resources(train, resources={"cpu": 5, "gpu": 0.5}),
             tune_config=tune.TuneConfig(
                 scheduler=pbt,
                 num_samples=10000,
@@ -335,11 +334,11 @@ if __name__ == "__main__":
             num_vec_envs=1,
             env_type='binary_viewcone',
             eval=True,
-            frame_stack_size=1,
+            frame_stack_size=16,
         )
-        path = "/mnt/e/BrainHack-TIL25/checkpoints/train_8a6dd/" \
-            "train_8a6dd_00001/" \
-                "novice_ppo_20mil_binaryenv_varyall_327680_steps"
+        path = "/mnt/e/BrainHack-TIL25/checkpoints/train_4abd8/" \
+            "train_4abd8_00001/" \
+                "novice_ppo_20mil_binaryenv_varyall_1179648_steps"
         model = PPO.load(
             path = path
         )
@@ -377,7 +376,7 @@ if __name__ == "__main__":
                         agent_past_obs = stack_frames(agent_past_obs, observation, model.observation_space)
                         past_obs[agent] = agent_past_obs
 
-                        action, _ = model.predict(agent_past_obs, deterministic=True)
+                        action, _ = model.predict(agent_past_obs, deterministic=False)
 
                     else:
                         action = np.random.randint(0, 5)

@@ -148,18 +148,7 @@ class CustomEvalCallback(EventCallback):
             # Reset success rate buffer
             self._is_success_buffer = []
 
-            # policy_episode_rewards, policy_episode_lengths = custom_marl_evaluate_policy(
-            #     self.model,
-            #     self.eval_env,
-            #     n_eval_episodes=self.n_eval_episodes,
-            #     render=self.render,
-            #     deterministic=self.deterministic,
-            #     return_episode_rewards=True,
-            #     warn=self.warn,
-            #     callback=self._log_success_callback,
-            # )
-            # will return a list of lists. each is for each policy
-            policy_episode_rewards, policy_episode_lengths = self.seperate_evaluate_policy(
+            policy_episode_rewards, policy_episode_lengths = custom_marl_evaluate_policy(
                 self.model,
                 self.eval_env,
                 n_eval_episodes=self.n_eval_episodes,
@@ -169,6 +158,17 @@ class CustomEvalCallback(EventCallback):
                 warn=self.warn,
                 callback=self._log_success_callback,
             )
+            # will return a list of lists. each is for each policy
+            # policy_episode_rewards, policy_episode_lengths = self.seperate_evaluate_policy(
+            #     self.model,
+            #     self.eval_env,
+            #     n_eval_episodes=self.n_eval_episodes,
+            #     render=self.render,
+            #     deterministic=self.deterministic,
+            #     return_episode_rewards=True,
+            #     warn=self.warn,
+            #     callback=self._log_success_callback,
+            # )
 
 
             if self.root_log_path is not None:
