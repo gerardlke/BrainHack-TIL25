@@ -94,19 +94,21 @@ def build_env(
         debug=debug,
         **kwargs
     )
-
+    
     if env_wrappers is None:
         env_wrappers = [
             FlattenDictWrapper,
         ]
         print('YES USING FLATTENDICTWRAPPER')
+    else:
+        raise AssertionError('not using flatten dict, this behaviour is unexpected')
     for wrapper in env_wrappers:
         env = wrapper(env)  # type: ignore
     # this wrapper helps error handling for discrete action spaces
     env = wrappers.AssertOutOfBoundsWrapper(env)
     # Provides a wide variety of helpful user errors
     env = wrappers.OrderEnforcingWrapper(env)
-
+    
     parallel_env = aec_to_parallel(env)
     frame_stack = ss.frame_stack_v2(parallel_env, stack_size=frame_stack_size, stack_dim=0)
     vec_env = ss.pettingzoo_env_to_vec_env_v1(frame_stack)
@@ -128,13 +130,14 @@ class normal_env(raw_env):
     Base, standard training env. We disable different agent selection  as we would like to fix the indexes of
     the scout and guards, so that we can 
     """
-    def __init__(self, reward_names, rewards_dict, num_iters=1000, eval=False, **kwargs):
+    def __init__(self, reward_names, rewards_dict, num_iters=1000, eval=False, collisions=True, **kwargs):
         # self.rewards_dict is defined in super init call
         super().__init__(**kwargs)
         self.num_iters = num_iters
         self.reward_names = reward_names
         self.rewards_dict = rewards_dict
         self.eval = eval
+        self.collisions = collisions
         self.prev_distances = {agent: None for agent in self.possible_agents[:]}
         # Generate 32 bytes of random data
         random_bytes = os.urandom(32)
@@ -366,7 +369,8 @@ class normal_env(raw_env):
                         self.rewards[self.scout] += self.rewards_dict.get(
                             self.reward_names.SCOUT_STEP_EMPTY_TILE, 0
                         )
-            return collision
+            if self.collisions:
+                return collision
         if _action in (Action.LEFT, Action.RIGHT):
             # update direction of agent, right = +1 and left = -1 (which is equivalent to +3), mod 4.
             self.agent_directions[agent] = (
@@ -380,16 +384,18 @@ class normal_env(raw_env):
             self.rewards[agent] += self.rewards_dict.get(
                 self.reward_names.STATIONARY_PENALTY, 0
             )
-        if agent != self.scout and not self.eval:
+        # if agent != self.scout and not self.eval:
             # we now give guards negative rewards, based on their distance to the scout
-            distance = self.get_info(agent)['euclidean']
-            if self.prev_distances[agent] is not None:
-                diff = abs(self.prev_distances[agent] - distance)
-            else:
-                diff = 0
-            self.prev_distances[agent] = distance
+            # distance = self.get_info(agent)['euclidean']
+            # if self.prev_distances[agent] is not None:
+            #     diff = abs(self.prev_distances[agent] - distance)
+            # else:
+            #     diff = 0
+            # self.prev_distances[agent] = distance
             # negative of distance differences as reward increment? 
-            self.rewards[agent] += -diff 
+            # self.rewards[agent] += -diff 
+            # self.rewards[agent] += distance / 5
+        
 
         return None
     
@@ -500,7 +506,7 @@ class normal_env(raw_env):
                 "direction": Discrete(len(Direction)),
                 "scout": Discrete(2),
                 "location": Box(0, self.size, shape=(2,), dtype=np.int64),
-                "step": Discrete(self.num_iters + 1),
+                "step": Box(0, self.num_iters + 1, shape=(1,)),
             }
         )
     
@@ -600,7 +606,7 @@ class binary_viewcone_env(normal_env):
                 "direction": Discrete(len(Direction)),
                 "scout": Discrete(2),
                 "location": Box(0, self.size, shape=(2,), dtype=np.int64),
-                "step": Discrete(self.num_iters),
+                "step": Box(0, self.num_iters + 1, shape=(1,)),
             }
         )
 

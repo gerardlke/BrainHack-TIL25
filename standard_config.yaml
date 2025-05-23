@@ -4,7 +4,7 @@ env:
   train:
     # rewards:
     num_vec_envs: 4
-    env_type: 'normal'
+    env_type: 'binary'
     novice: True
     num_iters: 100
     eval_mode: True
@@ -14,12 +14,12 @@ env:
 
   eval:
     # rewards:
-    num_vec_envs: 4
+    num_vec_envs: 1
     env_type: 'normal'
     novice: True
     num_iters: 100
     eval_mode: True
-    frame_stack_size: 4
+    frame_stack_size: 1
     render_mode:
 
 
@@ -41,6 +41,8 @@ policies:
 
   
 train:
+  n_steps: 1000
+  root_dir: '/mnt/e/BrainHack-TIL25'
   # all callbacks and their configurations here
   callbacks:
 

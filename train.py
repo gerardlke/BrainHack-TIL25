@@ -1,10 +1,11 @@
 import argparse
+import numpy as np
 
 from omegaconf import OmegaConf
 from pathlib import Path
 
 # the 3 components we will use
-from trainer import RLTrainer
+from trainer import RLRolloutSimulator
 from stablebaselines_gridworld import build_env
 
 from enum import StrEnum, auto
@@ -12,7 +13,7 @@ from enum import StrEnum, auto
 """
 TODO additional after baseline pipeline is established:
 1. Integrate ray
-
+ok bet
 """
 
 # re-define reward names to pass into our env-builder.
@@ -57,6 +58,27 @@ def parse_args():
 
 config_path = 'standard_config.yaml'
 
+def generate_policy_agent_indexes(n_envs, policy_mapping):
+    """
+    Input: A list of policy mapping each agent's index to a policy.
+    E.g default [1, 0, 0, 0] maps the 0th index agent to policy with id 1,
+    and 1, 2, 3 index to policy of id 0.
+    From this, create a nested list of n policies long, each list has indexes
+    of the vectorized environments index.
+    e.g n_envs = 2, policy mapping as above.
+    Output will be:
+    [
+        [1, 2, 3, 5, 6, 7], [0, 4]
+    ].
+    """
+    n_policy_mapping = np.array(policy_mapping * n_envs)
+    policy_indexes = [
+        np.where(n_policy_mapping == polid)[0] for polid in np.unique(n_policy_mapping)
+    ]
+
+    return policy_indexes
+
+
 def main():
     args = parse_args()
     config_path = args.config
@@ -71,14 +93,14 @@ def main():
     config = OmegaConf.load(config_path)
     print('config', config)
     
-    # # first, load in training configurations to override others
-    # training_config = config.train
+    # first, load in training configurations to override others
+    training_config = config.train
 
     env_config = config.env
     train_env_config = env_config.train
     eval_env_config = env_config.eval
 
-    _, train_env = build_env(
+    train_gridworld, train_env = build_env(
         reward_names=CustomRewardNames,
         rewards_dict=STD_REWARDS_DICT,
         **train_env_config
@@ -89,8 +111,24 @@ def main():
         **eval_env_config
     )
 
+    policy_agent_indexes = generate_policy_agent_indexes(
+        train_env_config.num_vec_envs, train_gridworld.policy_mapping
+    )
 
+    assert len(train_env.observation_space.shape) == 1
     policies_config = config.policies
+    trial_code = 'test'
+    trial_name = 'delete_me'
+    eval_log_path = f"{training_config.root_dir}/ppo_logs/{trial_code}/{trial_name}"
+    RLRolloutSimulator(
+        train_env=train_env,
+        policies_config=policies_config,
+        policy_agent_indexes=policy_agent_indexes,
+        tensorboard_log=eval_log_path,
+        callbacks=None,
+        n_steps=training_config.n_steps,
+        verbose=1,
+    )
     
 
 

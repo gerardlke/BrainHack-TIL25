@@ -3,6 +3,7 @@ import time
 from collections import deque
 from typing import Any, Dict, List, Optional, Type, Union, TypeVar
 from copy import deepcopy
+from omegaconf import OmegaConf
 import gymnasium
 from gymnasium import spaces
 from stable_baselines3.common.buffers import DictRolloutBuffer
@@ -19,7 +20,7 @@ from stable_baselines3.common.utils import (configure_logger, obs_as_tensor,
                                             safe_mean)
 from stable_baselines3.common.vec_env import DummyVecEnv
 from pettingzoo import ParallelEnv
-
+from modifiedppo import ModifiedPPO
 from stable_baselines3.common.utils import safe_mean
 from einops import rearrange
 from supersuit.vector.markov_vector_wrapper import MarkovVectorEnv
@@ -35,7 +36,7 @@ class DummyGymEnv(gymnasium.Env):
         self.action_space = action_space
 
 
-class RLTrainer:
+class RLRolloutSimulator:
     """
     Acts as a wrapper around multiple policies and environments, calling them during rollouts
     and calling the policies train method afterwards.
@@ -45,7 +46,13 @@ class RLTrainer:
 
     def __init__(
         self,
-        config,
+        train_env,
+        policies_config,
+        policy_agent_indexes,
+        callbacks,
+        n_steps,
+        tensorboard_log,
+        verbose,
     ):
         """
         All that is required is the configuration file.
@@ -56,75 +63,60 @@ class RLTrainer:
         -> Define policy(ies), which utilize the environment observation space
         -> Define callbacks
 
+        Rollout flows as follows:
+        -> Reset environment to recieve initial observation.
+        -> Index using policy agent indexes to obtain policy-specific observations.
+        -> Per policy, do an action
+        -> Aggregate all actions and step in the environment, rinsing and repeating.
+
+        Args:
+            - policies_config: Dictionary from omegaconf, policies can be access by 
+                string of their policy id, e.g policies_config['0']
+            - 
+
         """
-        self.env = env
-        self.n_steps = n_steps
-        assert num_agents == 4
-        assert num_policies == 2
-        self.num_agents = num_agents
-        self.num_policies = num_policies
-        print('self.env.observation_space', self.env.observation_space)
-        print('self.env.num_envs', self.env.num_envs)
+        self.train_env = train_env
+        self.policies_config = policies_config
+        self.policy_agent_indexes = policy_agent_indexes
+        self.callbacks = callbacks
 
-        self.num_vec_envs = env.num_envs // num_agents  # number of true vectorized environments, parallelenv slaps all 4 agents to make 2 * 4 = 8 envs,
-        # but for certain calculations we only want the number of vector environments, so this is here
-        self.num_scout_to_policy = 1
-        self.num_guard_to_policy = 3
-        # what this really represents is the number of AECEnvs.
-        # what the below represents is the equivalent environment space that observations will be stacked along.
-        # e.g for a base AECEnv with 4 agents, vectorized in 2 envs, there are indeed 2 envs, but the way the policies
-        # communicate is through treating it as if it is a 'number of agents under that policy * number of actual environments these
-        # agents are acting under', hence why in this case, self.num_scout_envs is 2, self.num_guard_envs is 6.
-        self.num_scout_envs = self.num_vec_envs * 1  # i love hardcoding!
-        self.num_guard_envs = self.num_vec_envs * 3
+        self.n_steps = n_steps  # we forcibly standardize this across all agents, because if one collects fewer n_steps
+        # than the other, that would be kinda wack
 
-        self.observation_space = env.observation_space
-        self.action_space = env.action_space
+        assert len(self.train_env.observation_space.shape) == 1, 'Assertion failed. We only support training environments' \
+            'where everything is flattened, just to standardize things.'
+        # observation_space is flattened per agent, then concatenated across all agent.
+        # this means that if the original flattened dict space is 36
+
+        self.observation_space = self.train_env.observation_space
+        self.action_space = self.train_env.action_space
         self._vec_normalize_env = None
-        print('self._vec_normalize_env', self._vec_normalize_env)
 
         self.tensorboard_log = tensorboard_log
         self.verbose = verbose
         self._logger = None
         env_fn = lambda: DummyGymEnv(self.observation_space, self.action_space)
-        self.dummy_envs = [DummyVecEnv([env_fn] * self.num_guard_envs), DummyVecEnv([env_fn] * self.num_scout_envs)]
+        self.dummy_envs = [DummyVecEnv([env_fn] * len(policy_index)) for policy_index in self.policy_agent_indexes]
         # this is a wrapper class, so it will not hold any states like
         # buffer_size, or action_noise. pass those straight to DQN.
 
-        # we keep self.agents as a list, where the first is always the scout and the second is always the guard model.
-        # for now do not 
-        self.policies = [
-            PPO(
-                policy=policy,
-                env=self.dummy_envs[i],
-                learning_rate=learning_rate,
-                n_steps=n_steps,
-                batch_size=batch_size,
-                n_epochs=n_epochs,
-                gamma=gamma,
-                gae_lambda=gae_lambda,
-                clip_range=clip_range,
-                clip_range_vf=clip_range_vf,
-                normalize_advantage=normalize_advantage,
-                ent_coef=ent_coef,
-                vf_coef=vf_coef,
-                max_grad_norm=max_grad_norm,
-                use_sde=use_sde,
-                sde_sample_freq=sde_sample_freq,
-                target_kl=target_kl,
-                stats_window_size=stats_window_size,
-                tensorboard_log=tensorboard_log,
-                policy_kwargs=policy_kwargs,
-                verbose=verbose,
-                seed=seed,
-                device=device,
-                _init_setup_model=_init_setup_model,
+        self.policies = []
+        for polid, policy_config in policies_config.items():
+            policy_type = eval(policy_config.policy)  # this will fail if the policy specified in the config
+            # has not yet been imported. TODO do a registry if we aren't lazy?
+            print('policy_type??', policy_type)
+            print('policies_config', policies_config)
+            # policies_config = OmegaConf.to_container(policies_config, resolve=True)
+            # print('policies_config after dump', policies_config)
+
+            self.policies.append(
+                policy_type(
+                    env = self.dummy_envs[polid],
+                    **policy_config
+                )
             )
-            for i in range(self.num_policies)
-        ]
 
-        assert self.num_policies == 2, 'Right now only supports 2 num_policies; 1 for scout and 1 unified guard'
-
+        
     def learn(
         self,
         total_timesteps: int,
