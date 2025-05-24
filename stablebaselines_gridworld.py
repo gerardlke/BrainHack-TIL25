@@ -157,6 +157,10 @@ class normal_env(raw_env):
         self.policy_mapping = [0] * 4
         self.policy_mapping[0] = 1
 
+        # include here a role_mapping item. This is to make clear which players map to which roles.
+        # once again, hardcoded to be [1 0 0 0] due to our lock (which is a significant convenience)
+        self.role_mapping = [1, 0, 0, 0]
+
 
     def _render_frame(self):
         if self.window is None and self.render_mode in self.metadata["render_modes"]:

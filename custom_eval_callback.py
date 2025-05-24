@@ -45,11 +45,13 @@ class CustomEvalCallback(EventCallback):
     def __init__(
         self,
         in_bits,
+        agent_roles: list,
+        policy_mapping: list,
+        evaluate_policy: str,
         eval_env: Union[gym.Env, VecEnv],
+        eval_env_config,
         callback_on_new_best: Optional[BaseCallback] = None,
         callback_after_eval: Optional[BaseCallback] = None,
-        n_eval_episodes: int = 5,
-        eval_freq: int = 10000,
         log_path: Optional[str] = None,
         best_model_save_path: Optional[str] = None,
         deterministic: bool = True,
@@ -57,6 +59,15 @@ class CustomEvalCallback(EventCallback):
         verbose: int = 1,
         warn: bool = True,
     ):  
+        """
+        init.
+        Crucial args:
+            - eval_env_config: Must-have the configuration state of eval,
+            - eval_env: the actual environment to do evaluation
+            - evaluate_policy: the evaluate_policy to proceed with (multi-policy or single-policy) (we will do checks on this)
+            - agent_roles: the roles of each agent, e.g [1, 0, 0, 0]
+            - policy_mapping: the policy each agent maps to: e.g [1, 0, 0, 0]
+        """
         super().__init__(callback_after_eval, verbose=verbose)
         self.in_bits = in_bits
         self.callback_on_new_best = callback_on_new_best
@@ -64,8 +75,8 @@ class CustomEvalCallback(EventCallback):
             # Give access to the parent
             self.callback_on_new_best.parent = self
 
-        self.n_eval_episodes = n_eval_episodes
-        self.eval_freq = eval_freq
+        self.n_eval_episodes = eval_env_config.n_eval_episodes
+        self.eval_freq = eval_env_config.eval_freq
         self.best_mean_reward = -np.inf
         self.last_mean_reward = -np.inf
         self.deterministic = deterministic
@@ -94,6 +105,22 @@ class CustomEvalCallback(EventCallback):
         self._is_success_buffer: list[bool] = []
         self.evaluations_successes: list[list[bool]] = []
 
+        # m-a-m-p: multi agent multi policy
+        # m-a-s-p: multi agent single policy
+        assert evaluate_policy in ['mp', 'sp'], 'Assertion failed. Unsupported evaluate_policy.'
+        if evaluate_policy == 'mp':
+            self.evaluate_policy = self.custom_marl_evaluate_policy
+        else:
+            self.evaluate_policy = self.seperate_agent_evaluate
+
+        self.role_mapping = agent_roles * eval_env_config.num_vec_envs
+
+        vec_policy_mapping = np.array(policy_mapping * eval_env_config.num_vec_envs)
+        self.policy_agent_indexes = [
+            np.where(vec_policy_mapping == polid)[0] for polid in np.unique(vec_policy_mapping)
+        ]
+
+
     def _init_callback(self) -> None:
         # Does not work in some corner cases, where the wrapper is not the same
         if not isinstance(self.training_env, type(self.eval_env)):
@@ -103,10 +130,7 @@ class CustomEvalCallback(EventCallback):
         if self.best_model_save_path is not None:
             os.makedirs(self.best_model_save_path, exist_ok=True)
         if self.root_log_path is not None:
-            if not hasattr(self.model, 'num_policies'):
-                self.num_policies = 2
-            else:
-                self.num_policies = self.model.num_policies
+            self.num_policies = len(self.model.policies)
             for i in range(self.num_policies):
                 os.makedirs(os.path.dirname(os.path.join(self.root_log_path, f'polid_{i}')), exist_ok=True)
 
@@ -148,7 +172,7 @@ class CustomEvalCallback(EventCallback):
             # Reset success rate buffer
             self._is_success_buffer = []
 
-            policy_episode_rewards, policy_episode_lengths = custom_marl_evaluate_policy(
+            policy_episode_rewards, policy_episode_lengths = self.evaluate_policy(
                 self.model,
                 self.eval_env,
                 n_eval_episodes=self.n_eval_episodes,
@@ -158,17 +182,6 @@ class CustomEvalCallback(EventCallback):
                 warn=self.warn,
                 callback=self._log_success_callback,
             )
-            # will return a list of lists. each is for each policy
-            # policy_episode_rewards, policy_episode_lengths = self.seperate_evaluate_policy(
-            #     self.model,
-            #     self.eval_env,
-            #     n_eval_episodes=self.n_eval_episodes,
-            #     render=self.render,
-            #     deterministic=self.deterministic,
-            #     return_episode_rewards=True,
-            #     warn=self.warn,
-            #     callback=self._log_success_callback,
-            # )
 
 
             if self.root_log_path is not None:
@@ -244,7 +257,7 @@ class CustomEvalCallback(EventCallback):
 
     def custom_marl_evaluate_policy(
         self,
-        model: "type_aliases.PolicyPredictor",
+        simulator,
         env: Union[gym.Env, VecEnv],
         n_eval_episodes: int = 10,
         deterministic: bool = True,
@@ -255,9 +268,8 @@ class CustomEvalCallback(EventCallback):
         warn: bool = True,
     ) -> Union[tuple[float, float], tuple[list[float], list[int]]]:
         """
-        yoink evaluate_policy from stable_baselines3/common/evaluation, but tweak to support model
-        
-        heavily hardcoded for convenience, TODO fix everything
+        Multi-agent, multi policy case.
+        Requires discernment of which agents map to which policies. (accessible in policy_agent_indexes attribute).
         """
 
         is_monitor_wrapped = False
@@ -278,12 +290,13 @@ class CustomEvalCallback(EventCallback):
             )
 
         # initialize evaluation session trackers.
+        num_policies = len(self.policy_agent_indexes)
         n_envs = env.num_envs  # num agents times number of vector envs
-        episode_rewards = [[] for _ in range(model.num_policies)] # nested list, per policy.
+        episode_rewards = [[] for _ in range(num_policies)] # nested list, per policy.
         # each nested list is appended on a per-env basis
-        episode_lengths = [[] for _ in range(model.num_policies)] 
-        all_clipped_actions = [None] * model.num_policies
-        all_actions = [None] * model.num_policies
+        episode_lengths = [[] for _ in range(num_policies)] 
+        all_clipped_actions = [None] * num_policies
+        all_actions = [None] * num_policies
 
         step_actions = np.empty(n_envs, dtype=np.int64)
             
@@ -292,25 +305,23 @@ class CustomEvalCallback(EventCallback):
         episode_count_targets = np.array([n_eval_episodes for _ in range(n_envs)], dtype="int")
         episode_starts = np.ones((env.num_envs,), dtype=bool)
 
-        scout_envs = int(env.num_envs * (model.num_scout_to_policy / model.num_agents))
-        guard_envs = int(env.num_envs * (model.num_guard_to_policy / model.num_agents))
-
         # per policy per env per agent, rewards are aggregated.
         # btw n_envs is already the num_vec_envs * num_agents, cuz supersuit and parallel env are nice like that
         # for each env that reaches a ended state, we the reward of that agent-env to episode_rewards.
         # vice versa for episode_lengths
-        current_rewards = [np.zeros(guard_envs), np.zeros(scout_envs)]
-        current_lengths = [np.zeros(guard_envs, dtype="int"), np.zeros(scout_envs, dtype="int")]
+        current_rewards = [np.zeros(len(policy_agent_index)) 
+                for policy_agent_index in self.policy_agent_indexes]
+        current_lengths = [np.zeros(len(policy_agent_index), dtype='int') 
+                for policy_agent_index in self.policy_agent_indexes]
 
         # reset and format last observation
         observations = env.reset()
-        policy_agent_indexes = model.get_policy_agent_indexes_from_viewcone(last_obs=observations)
-        last_obs = model.format_env_returns(observations, policy_agent_indexes, device=model.policies[0].device)
+        last_obs = simulator.format_env_returns(observations, self.policy_agent_indexes, device=simulator.policies[0].device)
 
         states = None
         # predict each policy
         while (episode_counts < episode_count_targets).any():
-            for polid, policy in enumerate(model.policies):
+            for polid, policy in enumerate(simulator.policies):
                 actions, states = policy.predict(
                     last_obs[polid],  # type: ignore[arg-type]
                     state=states,
@@ -322,30 +333,29 @@ class CustomEvalCallback(EventCallback):
                 if hasattr(all_actions[polid], 'cpu'):
                     all_actions[polid] = all_actions[polid].cpu().numpy()
                 clipped_actions = all_actions[polid]
-                if isinstance(model.action_space, Box):
+                if isinstance(policy.action_space, Box):
                     clipped_actions = np.clip(
                         clipped_actions,
-                        model.action_space.low,
-                        model.action_space.high,
+                        policy.action_space.low,
+                        policy.action_space.high,
                     )
-                elif isinstance(model.action_space, Discrete):
+                elif isinstance(policy.action_space, Discrete):
                     # get integer from numpy array
                     clipped_actions = np.array(
                         [action.item() for action in clipped_actions]
                     )
                 all_clipped_actions[polid] = clipped_actions
 
-            for polid, policy_agent_index in enumerate(policy_agent_indexes):
+            for polid, policy_agent_index in enumerate(self.policy_agent_indexes):
                 step_actions[policy_agent_index] = all_clipped_actions[polid]
 
             # check placeholder actions?
             # print('step_actions', step_actions)
             new_observations, rewards, dones, infos = env.step(step_actions)
-            policy_agent_indexes = model.get_policy_agent_indexes_from_viewcone(last_obs=new_observations)
-            all_curr_obs = model.format_env_returns(new_observations, policy_agent_indexes, device=model.policies[0].device)
-            all_rewards = model.format_env_returns(rewards, policy_agent_indexes, device=model.policies[0].device, to_tensor=False)
-            all_dones = model.format_env_returns(dones, policy_agent_indexes, device=model.policies[0].device, to_tensor=False)
-            all_infos = model.format_env_returns(infos, policy_agent_indexes, device=model.policies[0].device, to_tensor=False)
+            all_curr_obs = simulator.format_env_returns(new_observations, self.policy_agent_indexes, device=simulator.policies[0].device)
+            all_rewards = simulator.format_env_returns(rewards, self.policy_agent_indexes, device=simulator.policies[0].device, to_tensor=False)
+            all_dones = simulator.format_env_returns(dones, self.policy_agent_indexes, device=simulator.policies[0].device, to_tensor=False)
+            all_infos = simulator.format_env_returns(infos, self.policy_agent_indexes, device=simulator.policies[0].device, to_tensor=False)
             # print('all_dones', all_dones)
             # print('step_actions', step_actions)
 
@@ -360,7 +370,7 @@ class CustomEvalCallback(EventCallback):
                 all_done, # all n_env * num_agents under policy long e.g 6
                 all_info, # all n_env * num_agents under policy long e.g 6
             ) in enumerate(zip(
-                policy_agent_indexes,
+                self.policy_agent_indexes,
                 current_rewards,  
                 current_lengths,
                 episode_rewards, 
@@ -437,9 +447,9 @@ class CustomEvalCallback(EventCallback):
         return mean_reward, std_reward
 
 
-    def seperate_evaluate_policy(
+    def seperate_agent_evaluate(
         self,
-        model: "type_aliases.PolicyPredictor",
+        simulator,
         _env: Union[gym.Env, VecEnv],
         n_eval_episodes: int = 10,
         deterministic: bool = True,
@@ -450,46 +460,13 @@ class CustomEvalCallback(EventCallback):
         warn: bool = True,
     ) -> Union[tuple[float, float], tuple[list[float], list[int]]]:
         """
-        Runs the policy for ``n_eval_episodes`` episodes and outputs the average return
-        per episode (sum of undiscounted rewards).
-        If a vector env is passed in, this divides the episodes to evaluate onto the
-        different elements of the vector env. This static division of work is done to
-        remove bias. See https://github.com/DLR-RM/stable-baselines3/issues/402 for more
-        details and discussion.
+        Evaluates each policy seperately. This means that we make a distinction not between the policies the agents
+        are operating under (because they are all the same), but rather the nature of each agent.
 
-        .. note::
-            If environment has not been wrapped with ``Monitor`` wrapper, reward and
-            episode lengths are counted as it appears with ``env.step`` calls. If
-            the environment contains wrappers that modify rewards or episode lengths
-            (e.g. reward scaling, early episode reset), these will affect the evaluation
-            results as well. You can avoid this by wrapping environment with ``Monitor``
-            wrapper before anything else.
-
-        :param model: The RL agent you want to evaluate. This can be any object
-            that implements a ``predict`` method, such as an RL algorithm (``BaseAlgorithm``)
-            or policy (``BasePolicy``).
-        :param env: The gym environment or ``VecEnv`` environment.
-        :param n_eval_episodes: Number of episode to evaluate the agent
-        :param deterministic: Whether to use deterministic or stochastic actions
-        :param render: Whether to render the environment or not
-        :param callback: callback function to perform additional checks,
-            called ``n_envs`` times after each step.
-            Gets locals() and globals() passed as parameters.
-            See https://github.com/DLR-RM/stable-baselines3/issues/1912 for more details.
-        :param reward_threshold: Minimum expected reward per episode,
-            this will raise an error if the performance is not met
-        :param return_episode_rewards: If True, a list of rewards and episode lengths
-            per episode will be returned instead of the mean.
-        :param warn: If True (default), warns user about lack of a Monitor wrapper in the
-            evaluation environment.
-        :return: Mean return per episode (sum of rewards), std of reward per episode.
-            Returns (list[float], list[int]) when ``return_episode_rewards`` is True, first
-            list containing per-episode return and second containing per-episode lengths
-            (in number of steps).
+        We will still use policy_agent_indexes
         """
         is_monitor_wrapped = False
         observations = _env.reset()
-        policy_agent_indexes = model.get_2_policy_agent_indexes_from_obs(last_obs=observations)
 
         # Avoid circular import
         from stable_baselines3.common.monitor import Monitor

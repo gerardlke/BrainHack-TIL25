@@ -3,7 +3,7 @@
 env:
   train:
     # rewards:
-    num_vec_envs: 4
+    num_vec_envs: 2
     env_type: 'binary'
     novice: True
     num_iters: 100
@@ -23,21 +23,18 @@ env:
     render_mode:
 
 
-
-
-
-
 # the actual mapping from agents to policies is independent of policy configurations
+# (will b handled in trainer)
 policies:
   0:
-    policy: ModifiedPPO
-    something_attribute: something
-    another_attribute: another thing
+    algorithm: ModifiedPPO
+    policy: 'MlpPolicy'
+
 
   1: 
-    policy: ModifiedPPO
-    something_attribute_but_id_1: something else
-    another_attribute_but_id_1: another thing else
+    algorithm: ModifiedPPO
+    policy: 'MlpPolicy'
+
 
   
 train:

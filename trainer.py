@@ -47,8 +47,9 @@ class RLRolloutSimulator:
     def __init__(
         self,
         train_env,
+        train_env_config,
         policies_config,
-        policy_agent_indexes,
+        policy_mapping,
         callbacks,
         n_steps,
         tensorboard_log,
@@ -77,7 +78,10 @@ class RLRolloutSimulator:
         """
         self.train_env = train_env
         self.policies_config = policies_config
-        self.policy_agent_indexes = policy_agent_indexes
+        self.policy_mapping = policy_mapping
+        self.policy_agent_indexes = self.generate_policy_agent_indexes(
+            n_envs=train_env_config.num_vec_envs, policy_mapping=self.policy_mapping
+        )
         self.callbacks = callbacks
 
         self.n_steps = n_steps  # we forcibly standardize this across all agents, because if one collects fewer n_steps
@@ -99,18 +103,16 @@ class RLRolloutSimulator:
         self.dummy_envs = [DummyVecEnv([env_fn] * len(policy_index)) for policy_index in self.policy_agent_indexes]
         # this is a wrapper class, so it will not hold any states like
         # buffer_size, or action_noise. pass those straight to DQN.
-
+        print(self.policy_agent_indexes)
         self.policies = []
-        for polid, policy_config in policies_config.items():
-            policy_type = eval(policy_config.policy)  # this will fail if the policy specified in the config
+        _policies_config = deepcopy(policies_config)
+        for polid, policy_config in _policies_config.items():
+            algo_type = eval(policy_config.algorithm)  # this will fail if the policy specified in the config
             # has not yet been imported. TODO do a registry if we aren't lazy?
-            print('policy_type??', policy_type)
-            print('policies_config', policies_config)
-            # policies_config = OmegaConf.to_container(policies_config, resolve=True)
-            # print('policies_config after dump', policies_config)
+            del policy_config.algorithm
 
             self.policies.append(
-                policy_type(
+                algo_type(
                     env = self.dummy_envs[polid],
                     **policy_config
                 )
@@ -237,117 +239,6 @@ class RLRolloutSimulator:
 
         for callback in callbacks:
             callback.on_training_end()
-
-    def eval(
-        self,
-        total_timesteps: int,
-        log_interval: int = 1,
-        tb_log_name: str = "RecurrentPPO",
-        reset_num_timesteps: bool = True,
-        progress_bar: bool = False,
-    ):
-        """
-        Main eval function. Mainly acts as a wrapper around self.collect_rollouts
-        """
-        print(f'NOTE: TOTAL TIMESTEPS {total_timesteps} INCLUDES NUMBER OF ENVIRONMENTS (currently {self.num_vec_envs}), AND IS NOT A PER-ENV BASIS')
-
-        self._logger = configure_logger(
-            self.verbose,
-            self.tensorboard_log,
-            tb_log_name,
-            reset_num_timesteps,
-        )
-        logdir = self.logger.dir
-
-        # Setup for each policy. Reset things, setup timestep tracking things.
-        # replace certain agent attributes
-        for polid, policy in enumerate(self.policies):
-            policy.start_time = time.time()
-            if policy.ep_info_buffer is None or reset_num_timesteps:
-                policy.ep_info_buffer = deque(maxlen=policy._stats_window_size)
-                policy.ep_success_buffer = deque(maxlen=policy._stats_window_size)
-
-            if policy.action_noise is not None:
-                policy.action_noise.reset()
-
-            if reset_num_timesteps:
-                policy.num_timesteps = 0
-                policy._episode_num = 0
-                policy._total_timesteps = total_timesteps
-            else:
-                # make sure training timestamps are ahead of internal counter
-                policy._total_timesteps = total_timesteps + policy.num_timesteps
-
-            policy._logger = configure_logger(
-                policy.verbose,
-                logdir,
-                f"policy_{polid}",
-                reset_num_timesteps,
-            )
-
-        # self.env returns a dict, where each key is (M * N, ...), M is number of envs, N is number of agents.
-        # we determine number of envs based on the output shape (should find a better way to do this)
-        reset_obs = self.env.reset()
-        n_rollout_steps = total_timesteps * self.num_vec_envs
-        total_rewards = self.collect_rollouts(
-            last_obs=reset_obs,
-            n_rollout_steps=n_rollout_steps,  # rollout increments timesteps by number of envs
-            callbacks=[],
-        )
-        return total_rewards
-
-        # agent training.
-        # for polid, policy in enumerate(self.policies):
-        #     policy._update_current_progress_remaining(
-        #         policy.num_timesteps, total_timesteps  # 
-        #     )
-        #     if log_interval is not None and num_timesteps % log_interval == 0:
-        #         fps = int(policy.num_timesteps / (time.time() - policy.start_time))
-        #         policy.logger.record("polid", polid, exclude="tensorboard")
-        #         policy.logger.record(
-        #             "time/iterations", num_timesteps, exclude="tensorboard"
-        #         )
-        #         if (
-        #             len(policy.ep_info_buffer) > 0
-        #             and len(policy.ep_info_buffer[0]) > 0
-        #         ):
-        #             print('rollout/ep_rew_mean', 
-        #             safe_mean(
-        #                     [ep_info["r"] for ep_info in policy.ep_info_buffer]
-        #                 ),)
-        #             print('rollout/ep_len_mean', 
-        #             safe_mean(
-        #                     [ep_info["l"] for ep_info in policy.ep_info_buffer]
-        #                 ),)
-        #             policy.logger.record(
-        #                 "rollout/ep_rew_mean",
-        #                 safe_mean(
-        #                     [ep_info["r"] for ep_info in policy.ep_info_buffer]
-        #                 ),
-        #             )
-        #             policy.logger.record(
-        #                 "rollout/ep_len_mean",
-        #                 safe_mean(
-        #                     [ep_info["l"] for ep_info in policy.ep_info_buffer]
-        #                 ),
-        #             )
-        #         policy.logger.record("time/fps", fps)
-        #         policy.logger.record(
-        #             "time/time_elapsed",
-        #             int(time.time() - policy.start_time),
-        #             exclude="tensorboard",
-        #         )
-        #         policy.logger.record(
-        #             "time/total_timesteps",
-        #             policy.num_timesteps,
-        #             exclude="tensorboard",
-        #         )
-        #         policy.logger.dump(step=policy.num_timesteps)
-
-            # policy.train()
-
-        # for callback in callbacks:
-        #     callback.on_training_end()
 
     def collect_rollouts(
             self,
@@ -520,6 +411,133 @@ class RLRolloutSimulator:
             **kwargs
             )
 
+    @staticmethod
+    def format_env_returns(
+        env_returns: dict[str, np.ndarray] | np.ndarray | list[dict],
+        policy_agent_indexes: np.ndarray,
+        to_tensor=True,
+        device=None,
+    ):
+        """
+        Helper function to format returns based on if they are a dict of arrays or just arrays.
+        We expect the first dimension of these arrays to be (num_envs * num_agents).
+
+        The flow is as follows:
+        1. Use indexes to extract the appropriate observations per policy.
+        Thats it
+
+        Args:
+            env_returns: dict[str, np.ndarray] | np.ndarray | list. We expect the first dimension of these arrays / length of list to be (num_envs * num_agents).
+            policy_agent_indexes: list of list of integer, demoninating the indexes of the policy (corresponding to the list index)
+                e.g [[1, 2, 3, 5, 6, 7], [0, 4]]  # first 6 map to a policy 0, second maps to a policy 1
+            to_tensor: Return as tensors
+            device: what device to map tensor to
+        Returns:
+            to_agents: list[np.ndarray] | list[dict[str, np.ndarray]], where first dimension of array is (num_envs.) and list is of length (num_agents).
+
+        """
+        num_policies = len(policy_agent_indexes)
+        if to_tensor:
+            assert device is not None, 'Assertion failed. format_env_returns function expects device to be stated if you want to run obs_as_tensor mutation.'
+            mutate_func = obs_as_tensor
+            kwargs = {'device': device}
+        else:
+            mutate_func = lambda x: x  # noqa: E731
+            kwargs = {}
+
+        # 1. appropriate indexing
+        if isinstance(env_returns, dict):
+            to_policies = [
+                    {k: mutate_func(np.take(v, policy_agent_indexes[polid], axis=0), **kwargs) 
+                        for k, v in env_returns.items()}
+                for polid in range(num_policies)
+            ]
+        elif isinstance(env_returns, np.ndarray):
+            to_policies = [
+                mutate_func(np.take(env_returns, policy_agent_indexes[polid], axis=0), **kwargs) for polid in range(num_policies)
+            ]
+        elif isinstance(env_returns, list):
+            # for now only 'info' fits in here. dont need to mutate?
+            to_policies = [
+                list(itemgetter( *(policy_agent_indexes[polid].tolist()) )(env_returns))
+                if len(policy_agent_indexes[polid]) > 1 else [itemgetter( *(policy_agent_indexes[polid].tolist()) )(env_returns)]
+                for polid in range(num_policies)
+            ]
+        else:
+            raise AssertionError(f'Assertion failed. format_env_returns recieved unexpected type {type(env_returns)}. \
+                Expected dict[str, np.ndarray] or np.ndarray or list.')
+
+        return to_policies
+    
+    @staticmethod
+    def generate_policy_agent_indexes(n_envs, policy_mapping):
+        """
+        Input: A list of policy mapping each agent's index to a policy.
+        E.g default [1, 0, 0, 0] maps the 0th index agent to policy with id 1,
+        and 1, 2, 3 index to policy of id 0.
+        From this, create a nested list of n policies long, each list has indexes
+        of the vectorized environments index.
+        e.g n_envs = 2, policy mapping as above.
+        Output will be:
+        [
+            [1, 2, 3, 5, 6, 7], [0, 4]
+        ].
+        """
+        n_policy_mapping = np.array(policy_mapping * n_envs)
+        policy_indexes = [
+            np.where(n_policy_mapping == polid)[0] for polid in np.unique(n_policy_mapping)
+        ]
+
+        return policy_indexes
+
+
+    @staticmethod
+    def get_2_policy_agent_indexes_from_obs(last_obs, case, is_binarized):
+        """
+        A rather hardcoded, inflexible function. Currently built to handle for the following cases:
+
+        1. Flattened dictionary  (will need to access hardcoded indexes according to shape)
+        2. Flattened viewcone
+
+        We will also do some checks on stacking, for safety.
+
+        Dimension notation:
+            - A: Env dimension / ParallelEnv * Agent dimension
+            - S: Arbitrary stacking dimension.
+            - B: Binary dimension of viewcone, if the observation converted to bits (should be 8)
+            - C: Column dimension of viewcone
+            - R: Row dimension of viewcone
+            - D: Flattened dictionary dimension of arbitrary size (we assume viewcone is at the end of each flattened dict list)
+        """
+        # hardcoded for viewcone. if this ever fails, goodluck!
+        # TODO: maybe pass all the way from source environment?
+        r = 5
+        c = 7
+        b = 8
+        assert isinstance(is_binarized, bool)
+        assert case in ['flat_dict', 'flat_viewcone'], 'Assertion failed.' \
+            'Case specified is not in the above list of supported observation types.'
+        if case == 'flat_dict':
+            # shape should be A (S D)
+            if is_binarized:
+                last_obs = rearrange(last_obs, 
+                    'A (S D) -> A S D', 
+                    )
+                is_scout = last_obs[:, 0, 5, 2, 2]
+        if len(last_obs.shape) == 2:
+            last_obs = rearrange(last_obs, 
+                'A (S C R B) -> A S B C R', 
+                R=5, C=7, B=8)
+            is_scout = last_obs[:, 0, 5, 2, 2]
+        else:
+            bits = np.unpackbits(last_obs[:, :, 2, 2][np.newaxis, :, :].astype(np.uint8), axis=0)
+            is_scout = bits[5, :, 0]
+
+        policy_agent_indexes = [
+            np.where(is_scout == 0)[0], np.where(is_scout == 1)[0]
+        ]
+
+        return policy_agent_indexes
 
     @classmethod
     def load(
