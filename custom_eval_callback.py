@@ -100,6 +100,9 @@ class CustomEvalCallback(EventCallback):
         # first list elements are results for seperate policies.
         # next list elements are results across seperate runs
         # next list elements are results across each agent-env
+        self.roles_results: dict[int, list[list[float]]] = defaultdict(list)
+        self.roles_timesteps: dict[int, list[int]] = defaultdict(list)
+
         self.evaluations_results: dict[int, list[list[float]]] = defaultdict(list)
         self.evaluations_timesteps: dict[int, list[int]] = defaultdict(list)
         self.evaluations_length: dict[int, list[list[int]]] = defaultdict(list)
@@ -135,9 +138,12 @@ class CustomEvalCallback(EventCallback):
         if self.best_model_save_path is not None:
             os.makedirs(self.best_model_save_path, exist_ok=True)
         if self.root_log_path is not None:
-            self.num_policies = len(self.model.policies)
+            self.num_policies = len(self.policy_agent_indexes)
+            self.num_roles = len(self.role_indexes)
             for i in range(self.num_policies):
-                os.makedirs(os.path.dirname(os.path.join(self.root_log_path, f'polid_{i}')), exist_ok=True)
+                os.makedirs(os.path.dirname(os.path.join(self.root_log_path, f'policy_id_{i}')), exist_ok=True)
+            for i in range(self.num_roles):
+                os.makedirs(os.path.dirname(os.path.join(self.root_log_path, f'role_id_{i}')), exist_ok=True)
 
         # Init callback called on new best model
         if self.callback_on_new_best is not None:
@@ -176,6 +182,8 @@ class CustomEvalCallback(EventCallback):
 
             # Reset success rate buffer
             self._is_success_buffer = []
+            print('self.role_indexes', self.role_indexes)
+            print('self.policy_agent_indexes', self.policy_agent_indexes)
 
             policy_episode_rewards, roles_episode_rewards, policy_episode_lengths = self.evaluate_policy(
                 self.model,
@@ -207,12 +215,23 @@ class CustomEvalCallback(EventCallback):
                 
                 for polid in self.evaluations_results:
                     np.savez(
-                        os.path.join(self.root_log_path, f'polid_{polid}'),
+                        os.path.join(self.root_log_path, f'policy_id_{polid}'),
                         timesteps=self.evaluations_timesteps[polid],
                         results=self.evaluations_results[polid],
                         ep_lengths=self.evaluations_length[polid],
                         **kwargs,  # type: ignore[arg-type]
                     )
+
+                for roid in range(len(roles_episode_rewards)):
+                    self.roles_results[roid].append(roles_episode_rewards[polid])
+                    self.roles_timesteps[polid].append(self.num_timesteps)
+                    np.savez(
+                        os.path.join(self.root_log_path, f'role_id_{roid}'),
+                        timesteps=self.roles_timesteps[polid],
+                        results=self.roles_results[roid],
+                    )
+
+
             # mean them all
             for polid, policy_episode_reward in enumerate(policy_episode_rewards):
                 policy_episode_rewards[polid] = np.mean(policy_episode_reward)
@@ -380,8 +399,12 @@ class CustomEvalCallback(EventCallback):
             
             all_role_rewards = simulator.format_env_returns(rewards, self.role_indexes, device=simulator.policies[0].device, to_tensor=False)
             all_roles_dones = simulator.format_env_returns(dones, self.role_indexes, device=simulator.policies[0].device, to_tensor=False)
-            
-            # the following code is hideous. please, avert your eyes.
+            # print('raw rewards', type(rewards))
+            # print('self.role_indexes', self.role_indexes)
+            # print('self.policy_agent_indexes', self.policy_agent_indexes)
+            # print('all_rewards', all_rewards)
+            # print('all_role_rewards', all_role_rewards)
+            # the following code is hideous. please, for your own sake, avert your eyes.
 
             for polid, (
                 policy_agent_index,
@@ -443,15 +466,17 @@ class CustomEvalCallback(EventCallback):
             for roid, (role_index,
                        current_role_rewards,
                        episode_role_rewards,
+                       role_rewards,
                        ) in enumerate(
                            zip(
                                self.role_indexes,
                                current_roles_rewards,
                                episode_roles_rewards,
+                               all_role_rewards
                             )):
-                print('role_index')
+                # print('role_index', role_index)
                 for enum, env_index in enumerate(role_index):
-                    current_role_rewards[enum] += all_role_rewards[enum]
+                    current_role_rewards[enum] += role_rewards[enum]
                     if episode_counts[env_index] < episode_count_targets[env_index]:
                         done = all_roles_dones[enum]
                         if done:
@@ -471,7 +496,7 @@ class CustomEvalCallback(EventCallback):
         if reward_threshold is not None:
             assert mean_reward > reward_threshold, "Mean reward below threshold: " f"{mean_reward:.2f} < {reward_threshold:.2f}"
         if return_episode_rewards:
-            return episode_policy_rewards, episode_role_rewards, episode_lengths
+            return episode_policy_rewards, episode_roles_rewards, episode_lengths
 
         return mean_reward, std_reward
 

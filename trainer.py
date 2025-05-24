@@ -474,14 +474,28 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
                 for polid in range(num_policies)
             ]
         elif isinstance(env_returns, np.ndarray):
+            # print('env_returns', env_returns)
+            # print('role indexes[polid]', [
+            #     np.take(env_returns, policy_agent_indexes[polid], axis=0) for polid in range(num_policies)
+            # ])
+            # print('role indexes[polid]', [
+            #     policy_agent_indexes[polid] for polid in range(num_policies)
+            # ])
             to_policies = [
                 mutate_func(np.take(env_returns, policy_agent_indexes[polid], axis=0), **kwargs) for polid in range(num_policies)
             ]
         elif isinstance(env_returns, list):
-            # for now only 'info' fits in here. dont need to mutate?
+            # print('env_returns', env_returns)
+            # print('role indexes[polid]', [
+            #     policy_agent_indexes[polid] for polid in range(num_policies)
+            # ])
+            # print('role indexes[polid] tolist?', [
+            #     policy_agent_indexes[polid].tolist() for polid in range(num_policies)
+            # ])
             to_policies = [
                 list(itemgetter( *(policy_agent_indexes[polid].tolist()) )(env_returns))
-                if len(policy_agent_indexes[polid]) > 1 else [itemgetter( *(policy_agent_indexes[polid].tolist()) )(env_returns)]
+                if len(policy_agent_indexes[polid]) > 1
+                else [itemgetter( *(policy_agent_indexes[polid].tolist()) )(env_returns)]
                 for polid in range(num_policies)
             ]
         else:
@@ -600,65 +614,6 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
     def save(self, path: str) -> None:
         for polid in range(self.num_policies):
             self.policies[polid].save(path=path + f"/policy_{polid}/model")
-
-
-    def format_env_returns(
-        self,
-        env_returns: dict[str, np.ndarray] | np.ndarray | list[dict],
-        policy_agent_indexes: np.ndarray,
-        to_tensor=True,
-        device=None,
-    ):
-        """
-        Helper function to format returns based on if they are a dict of arrays or just arrays.
-        We expect the first dimension of these arrays to be (num_envs * num_agents).
-
-        The flow is as follows:
-        1. Use indexes to extract the appropriate observations per policy.
-        Thats it
-
-        Args:
-            env_returns: dict[str, np.ndarray] | np.ndarray | list. We expect the first dimension of these arrays / length of list to be (num_envs * num_agents).
-        Returns:
-            to_agents: list[np.ndarray] | list[dict[str, np.ndarray]], where first dimension of array is (num_envs.) and list is of length (num_agents).
-        
-        Right now, very hardcoded to two agents
-        """
-        if to_tensor:
-            assert device is not None, 'Assertion failed. format_env_returns function expects device to be stated if you want to run obs_as_tensor mutation.'
-            mutate_func = obs_as_tensor
-            kwargs = {'device': device}
-        else:
-            mutate_func = lambda x: x  # noqa: E731
-            kwargs = {}
-
-        # 1. appropriate indexing
-        if isinstance(env_returns, dict):
-            to_policies = [
-                    {k: mutate_func(np.take(v, policy_agent_indexes[polid], axis=0), **kwargs) 
-                        for k, v in env_returns.items()}
-                for polid in range(self.num_policies)
-            ]
-        elif isinstance(env_returns, np.ndarray):
-            to_policies = [
-                mutate_func(np.take(env_returns, policy_agent_indexes[polid], axis=0), **kwargs) for polid in range(self.num_policies)
-            ]
-        elif isinstance(env_returns, list):
-            # for now only 'info' fits in here. dont need to mutate?
-            to_policies = [
-                list(itemgetter( *(policy_agent_indexes[polid].tolist()) )(env_returns))
-                if len(policy_agent_indexes[polid]) > 1 else [itemgetter( *(policy_agent_indexes[polid].tolist()) )(env_returns)]
-                for polid in range(self.num_policies)
-            ]
-            # for obs_list in to_policies:  # i love triple nested 4 loops because im too lazy to optimize
-            #     for d in obs_list:
-            #         for k, v in d.items():
-            #             d[k] = mutate_func(v, **kwargs)
-        else:
-            raise AssertionError(f'Assertion failed. format_env_returns recieved unexpected type {type(env_returns)}. \
-                Expected dict[str, np.ndarray] or np.ndarray or list.')
-
-        return to_policies
 
 
     def get_policy_agent_indexes_from_scout(self, last_obs):

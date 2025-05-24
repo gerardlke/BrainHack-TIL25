@@ -1,6 +1,7 @@
 import argparse
 import numpy as np
 import re
+import os
 
 from collections import defaultdict
 from ray import tune
@@ -137,9 +138,8 @@ class CustomTrainer(tune.Trainable):
         eval_env_config = deepcopy(self._eval_env_config)
         policies_config = deepcopy(self._policies_config)
 
-        print('before training_config', training_config)
         training_config = replace_and_report(training_config, config)
-        print('after training_config', training_config)
+
         train_env_config = replace_and_report(train_env_config, config)
         # we want to be more careful for the eval_env_config, since we keep it controlled at
         # 100 iters. just hardcode replace the frame stack size
@@ -152,11 +152,10 @@ class CustomTrainer(tune.Trainable):
         policies_hparams = split_dict_by_prefix(config)
         assert len(policies_hparams) == len(policies_config), 'Assertion failed, mismatching number of policies as specified by tune configuration,' \
             'and number of policies under the policies section. Failing gracefully.'
-        print('hparams', policies_hparams)
-        print('base', policies_config)
+
         for polid, incoming_policy_config in policies_hparams.items():
             policies_config[polid] = replace_and_report(policies_config[polid], incoming_policy_config, merge=True)
-        print('after replacement', policies_config)
+
 
         train_gridworld, train_env = build_env(
             reward_names=CustomRewardNames,
@@ -169,8 +168,8 @@ class CustomTrainer(tune.Trainable):
             **eval_env_config
         )
 
-        agent_roles = train_gridworld.role_mapping 
-        policy_mapping = train_gridworld.policy_mapping
+        self.agent_roles = list(base_config.agent_roles)
+        self.policy_mapping = list(base_config.policy_mapping)
 
         assert len(train_env.observation_space.shape) == 1, 'Assertion failed, your env observation space is not flattened.'
         policies_config = base_config.policies
@@ -179,13 +178,13 @@ class CustomTrainer(tune.Trainable):
         trial_name = self.trial_name
         EXPERIMENT_NAME = 'test'
 
-        eval_log_path = f"{self.root_dir}/ppo_logs/{trial_code}/{trial_name}"
+        self.eval_log_path = f"{self.root_dir}/ppo_logs/{trial_code}/{trial_name}"
         self.simulator = RLRolloutSimulator(
             train_env=train_env,
             train_env_config=train_env_config,
             policies_config=policies_config,
-            policy_mapping=policy_mapping,
-            tensorboard_log=eval_log_path,
+            policy_mapping=self.policy_mapping,
+            tensorboard_log=self.eval_log_path,
             callbacks=None,
             n_steps=training_config.n_steps,
             verbose=1,
@@ -201,8 +200,8 @@ class CustomTrainer(tune.Trainable):
             name_prefix=f"{EXPERIMENT_NAME}"
             )
         no_improvement = StopTrainingOnNoModelImprovement(
-            max_no_improvement_evals=50,
-            min_evals=50,
+            max_no_improvement_evals=5,
+            min_evals=5,
             verbose=1
         )
         above_reward = StopTrainingOnRewardThreshold(
@@ -212,8 +211,9 @@ class CustomTrainer(tune.Trainable):
         eval_callback = CustomEvalCallback(
             evaluate_policy='mp',
             in_bits=True if eval_env_config.env_type == 'binary' else False,  # TODO this is really bad code
-            agent_roles=agent_roles,
-            policy_mapping=policy_mapping,
+            log_path=self.eval_log_path,
+            agent_roles=self.agent_roles,
+            policy_mapping=self.policy_mapping,
             eval_env_config=eval_env_config,
             training_config=training_config,
             eval_env=eval_env,                    
@@ -236,6 +236,35 @@ class CustomTrainer(tune.Trainable):
             total_timesteps=self.total_timesteps,
             callbacks=self.callbacks,
         )
+
+        logging_dict = defaultdict()
+        mean_policy_scores = []
+
+        for polid in range(len(set(self.policy_mapping))):
+            path = os.path.join(self.eval_log_path, "evaluations", f"policy_id_{polid}.npz")
+            thing = np.load(path)
+            mean_scores = np.mean(thing['results'], axis=-1)
+            max_mean_eval = np.max(mean_scores)
+            max_idx = np.argmax(mean_scores)
+            mean_policy_scores.append(max_mean_eval)
+            best_timestep = thing['timesteps'][max_idx]
+            logging_dict.setdefault(f'policy_{polid}_best_result', max_mean_eval)
+            logging_dict.setdefault(f'policy_{polid}_best_timestep', best_timestep)
+
+        for polid in range(len(set(self.agent_roles))):
+            path = os.path.join(self.eval_log_path, "evaluations", f"role_id_{polid}.npz")
+            thing = np.load(path)
+            mean_scores = np.mean(thing['results'], axis=-1)
+            max_mean_eval = np.max(mean_scores)
+            max_idx = np.argmax(mean_scores)
+            best_timestep = thing['timesteps'][max_idx]
+            logging_dict.setdefault(f'role_{polid}_best_result', max_mean_eval)
+            logging_dict.setdefault(f'role_{polid}_best_timestep', best_timestep)
+
+        all_policy_scores = sum(mean_policy_scores)
+        logging_dict.setdefault('all_policy_scores', all_policy_scores)
+
+        return logging_dict
 
 if __name__ == '__main__':
     args = parse_args()
@@ -279,7 +308,7 @@ if __name__ == '__main__':
 
     pbt = PopulationBasedTraining(
             time_attr="training_iteration",
-            metric="all_scores",
+            metric="all_policy_scores",
             mode="max",
             perturbation_interval=5,  # every n trials
             hyperparam_mutations=merged)
