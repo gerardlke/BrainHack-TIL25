@@ -2,6 +2,7 @@ import argparse
 import numpy as np
 import re
 import os
+import json
 
 from collections import defaultdict
 from ray import tune
@@ -152,16 +153,30 @@ class CustomTrainer(tune.Trainable):
         policies_hparams = split_dict_by_prefix(config)
         assert len(policies_hparams) == len(policies_config), 'Assertion failed, mismatching number of policies as specified by tune configuration,' \
             'and number of policies under the policies section. Failing gracefully.'
-
+        num_policies = len(policies_hparams)
         for polid, incoming_policy_config in policies_hparams.items():
             policies_config[polid] = replace_and_report(policies_config[polid], incoming_policy_config, merge=True)
-
-
-        train_gridworld, train_env = build_env(
+        
+        print('config in setup', config)
+        REWARDS_DICT = {
+            CustomRewardNames.GUARD_CAPTURES: config.get('guard_captures'),
+            CustomRewardNames.SCOUT_CAPTURED: config.get('scout_captured'),
+            CustomRewardNames.SCOUT_RECON: config.get('scout_recon'),
+            CustomRewardNames.SCOUT_MISSION: config.get('scout_mission'),
+            CustomRewardNames.WALL_COLLISION: config.get('wall_collision'),
+            CustomRewardNames.STATIONARY_PENALTY: config.get('stationary_penalty'),
+            CustomRewardNames.SCOUT_STEP_EMPTY_TILE: config.get('scout_step_empty_tile'),
+            CustomRewardNames.LOOKING: config.get('looking'),
+        }
+        # disable collisions for now and enable false eval for now
+        # train_env_config['collisions'] = False
+        _, train_env = build_env(
             reward_names=CustomRewardNames,
-            rewards_dict=STD_REWARDS_DICT,
+            rewards_dict=REWARDS_DICT,
             **train_env_config
         )
+        # eval_env_config['collisions'] = False
+        # eval_env_config['eval'] = False
         _, eval_env = build_env(
             reward_names=CustomRewardNames,
             rewards_dict=STD_REWARDS_DICT,
@@ -172,7 +187,6 @@ class CustomTrainer(tune.Trainable):
         self.policy_mapping = list(base_config.policy_mapping)
 
         assert len(train_env.observation_space.shape) == 1, 'Assertion failed, your env observation space is not flattened.'
-        policies_config = base_config.policies
 
         trial_code = 'test'
         trial_name = self.trial_name
@@ -189,18 +203,21 @@ class CustomTrainer(tune.Trainable):
             n_steps=training_config.n_steps,
             verbose=1,
         )
-        self.total_timesteps = training_config.training_iters * training_config.n_steps * train_env.num_envs
+        self.total_timesteps = training_config.training_iters * train_env.num_envs
         eval_freq = self.total_timesteps / training_config.num_evals / train_env.num_envs
         eval_freq = int(max(eval_freq, training_config.n_steps))
+        print('eval_freq', eval_freq)
         training_config.eval_freq = eval_freq
 
-        checkpoint_callback = CheckpointCallback(
-            save_freq=eval_freq,
-            save_path=f"{self.root_dir}/checkpoints/{trial_code}/{trial_name}",
-            name_prefix=f"{EXPERIMENT_NAME}"
-            )
+        checkpoint_callbacks = [
+            CheckpointCallback(
+                save_freq=eval_freq,
+                save_path=f"{self.root_dir}/checkpoints/{trial_code}/{trial_name}/polid_{policy}",
+                name_prefix=f"{EXPERIMENT_NAME}"
+            ) for policy in range(num_policies)
+        ]
         no_improvement = StopTrainingOnNoModelImprovement(
-            max_no_improvement_evals=5,
+            max_no_improvement_evals=3,
             min_evals=5,
             verbose=1
         )
@@ -224,17 +241,15 @@ class CustomTrainer(tune.Trainable):
         # progress_bar = ProgressBarCallback()
 
         # Combine callbacks
-        self.callbacks = CallbackList([
-            eval_callback,
-            checkpoint_callback,
-            # progress_bar,
-        ])
+        self.callbacks = checkpoint_callbacks
+        self.eval_callback = eval_callback
         
 
     def step(self):  # This is called iteratively.
         self.simulator.learn(
             total_timesteps=self.total_timesteps,
             callbacks=self.callbacks,
+            eval_callback=self.eval_callback,
         )
 
         logging_dict = defaultdict()
@@ -263,8 +278,25 @@ class CustomTrainer(tune.Trainable):
 
         all_policy_scores = sum(mean_policy_scores)
         logging_dict.setdefault('all_policy_scores', all_policy_scores)
+        self.logging_dict = logging_dict
+        self.logging_dict.update({'step': 1})
 
         return logging_dict
+    
+    def save_checkpoint(self, tmp_checkpoint_dir):
+        path = os.path.join(tmp_checkpoint_dir, "state.npz")
+        print('path??', path)
+        np.savez(
+            path,
+            **self.logging_dict
+        )
+        return tmp_checkpoint_dir
+
+    def load_checkpoint(self, tmp_checkpoint_file):
+        # print('tmp_checkpoint_file??', tmp_checkpoint_file)
+        state = np.load(tmp_checkpoint_file)
+        self.iter = state["step"]
+        self.all_policy_scores = state['all_policy_scores']
 
 if __name__ == '__main__':
     args = parse_args()
@@ -294,6 +326,10 @@ if __name__ == '__main__':
         "scout_recon": interpret_search_space(tune_config.scout_recon),
         "scout_mission": interpret_search_space(tune_config.scout_mission),
         "scout_step_empty_tile": interpret_search_space(tune_config.scout_step_empty_tile),
+        "stationary_penalty": interpret_search_space(tune_config.stationary_penalty),
+        "looking": interpret_search_space(tune_config.looking),
+        "wall_collision": interpret_search_space(tune_config.wall_collision),
+        "distance_penalty": interpret_search_space(tune_config.distance_penalty),
     }
     # the following may be policy specific. hence, scale to n_policies:
     policy_dependent_hparams = [{
@@ -314,10 +350,10 @@ if __name__ == '__main__':
             hyperparam_mutations=merged)
     trainable_cls = tune.with_parameters(CustomTrainer, base_config=base_config)
     tuner = tune.Tuner(
-        tune.with_resources(trainable_cls, resources={"cpu": 5, "gpu": 0.5}),
+        tune.with_resources(trainable_cls, resources={"cpu": 5}),
         tune_config=tune.TuneConfig(
                 scheduler=pbt,
-                num_samples=20,
+                num_samples=100,
                 max_concurrent_trials=1,
         ),
         run_config=tune.RunConfig(

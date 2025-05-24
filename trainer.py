@@ -112,6 +112,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
 
         self.policies = []
         _policies_config = deepcopy(policies_config)
+        
         for polid, policy_config in _policies_config.items():
             algo_type = eval(policy_config.algorithm)  # this will fail if the policy specified in the config
             # has not yet been imported. TODO do a registry if we aren't lazy?
@@ -121,7 +122,8 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
                     f'You passed in different n_steps for polid {polid} when you '
             else:
                 policy_config.n_steps = self.n_steps
-
+            print('POLICY CONFIG OF POLID', polid)
+            print('policy_config:', policy_config)
             if hasattr(policy_config, 'path'):
                 policy = algo_type.load(
                     env = self.dummy_envs[polid],
@@ -143,7 +145,8 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
     def learn(
         self,
         total_timesteps: int,
-        callbacks: MaybeCallback = None,
+        callbacks: Optional[list[MaybeCallback]] = None,
+        eval_callback: Optional[MaybeCallback] = None,
         log_interval: int = 1,
         tb_log_name: str = "RLRolloutSimulator",
         reset_num_timesteps: bool = True,
@@ -155,7 +158,9 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         target: collect rollbacks and train up till total_timesteps.
         """
         print(f'NOTE: TOTAL TIMESTEPS {total_timesteps} INCLUDES NUMBER OF AGENT * VEC ENVIRONMENTS (currently {self.num_vec_envs}), AND IS NOT A PER-ENV BASIS')
-
+        if callbacks is not None:
+            assert len(callbacks) == self.num_policies, 'callbacks must a list of num_policies number of nested lists'
+            
         self.num_timesteps = 0
         all_total_timesteps = []
         
@@ -195,10 +200,15 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
                 reset_num_timesteps,
             )
 
-        callbacks = self._init_callback(callbacks)
+            callbacks[polid] = policy._init_callback(callbacks[polid])
 
+        if eval_callback is not None:
+            eval_callback = self._init_callback(eval_callback)
         # Call all callbacks back to call all backs, callbacks
-        callbacks.on_training_start(locals(), globals())
+        for callback in callbacks:
+            callback.on_training_start(locals(), globals())
+        if eval_callback is not None:
+            eval_callback.on_training_start(locals(), globals())
 
         # self.env returns a dict, where each key is (M * N, ...), M is number of envs, N is number of agents.
         # we determine number of envs based on the output shape (should find a better way to do this)
@@ -209,14 +219,15 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
             # environment sampling. has to be done in this particular way because of
             # gridworld's perculiarities
             start = time.time()
-            total_rewards, rollout_timesteps = self.collect_rollouts(
+            total_rewards, rollout_timesteps, continue_training = self.collect_rollouts(
                 last_obs=reset_obs,
                 n_rollout_steps=n_rollout_steps,  # rollout increments timesteps by number of envs
                 callbacks=callbacks,
+                eval_callback=eval_callback,
             )
+            if not continue_training:
+                break  # early stopping
             self.num_timesteps += rollout_timesteps
-            print('log_interval', log_interval)
-            print('timesteps', self.num_timesteps, total_timesteps)
 
             # agent training.
             for polid, policy in enumerate(self.policies):
@@ -251,12 +262,16 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
                 print(f'------------POLICY {polid} TRAIN TIME-------------')
                 print(time.time() - start)
 
-        callbacks.on_training_end()
+        for callback in callbacks:
+            callback.on_training_end()
+        if eval_callback is not None:
+            eval_callback.on_training_end()
 
     def collect_rollouts(
             self,
             last_obs,
             n_rollout_steps: int,
+            eval_callback,
             callbacks: list = [],
         ):
         """
@@ -275,6 +290,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         
         """
         # temporary lists to hold things before saved into history_buffer of agent.
+        continue_training = True
         all_last_episode_starts = [None] * self.num_policies
         all_clipped_actions = [None] * self.num_policies
         all_rewards = [None] * self.num_policies
@@ -303,7 +319,8 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
             if policy.use_sde:
                 policy.policy.reset_noise(num_envs)  # type: ignore[operator]
 
-            callbacks.on_rollout_start()
+            [callback.on_rollout_start() for callback in callbacks]
+            eval_callback.on_rollout_start()
             policy._last_episode_starts = np.ones((num_envs,), dtype=bool)
             all_last_episode_starts[polid] = policy._last_episode_starts
         # print('------------PRE ROLLOUT TIME-------------')
@@ -356,10 +373,12 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
             for policy in self.policies:
                 policy.num_timesteps += self.num_vec_envs
 
-            callbacks.update_locals(locals())
-            
-            # must-have for checkpointing
-            callbacks.on_step()
+            [callback.update_locals(locals()) for callback in callbacks]
+            [callback.on_step() for callback in callbacks]
+            eval_callback.update_locals(locals())
+            thing = eval_callback.on_step()
+            if not thing:  # early stopping from StopTrainingOnNoModelImprovement
+                continue_training = False
 
             n_steps += self.num_vec_envs
             # start = time.time()
@@ -388,9 +407,10 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
             last_obs = all_curr_obs
             all_last_episode_starts = all_dones
 
-        callbacks.on_rollout_end()
+        [callback.on_rollout_end() for callback in callbacks]
+        eval_callback.on_rollout_end()
 
-        return total_rewards, n_steps
+        return total_rewards, n_steps, continue_training
 
     def load_policy_id(
         self,

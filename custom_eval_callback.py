@@ -266,6 +266,7 @@ class CustomEvalCallback(EventCallback):
 
             # Trigger callback after every evaluation, if needed
             if self.callback is not None:
+                print('callback is not none,', self.callback)
                 continue_training = continue_training and self._on_event()
 
         return continue_training
@@ -387,6 +388,7 @@ class CustomEvalCallback(EventCallback):
             # however role-wise, split only the reward and dones.
             # this is because we arent running n-roles, but rather n-policies on the observations.
             new_observations, rewards, dones, infos = env.step(step_actions)
+            print('rewards???', rewards)
             all_curr_obs = simulator.format_env_returns(new_observations, self.policy_agent_indexes, device=simulator.policies[0].device, to_tensor=False)
             all_rewards = simulator.format_env_returns(rewards, self.policy_agent_indexes, device=simulator.policies[0].device, to_tensor=False)
             all_dones = simulator.format_env_returns(dones, self.policy_agent_indexes, device=simulator.policies[0].device, to_tensor=False)

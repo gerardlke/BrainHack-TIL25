@@ -390,9 +390,9 @@ class normal_env(raw_env):
             self.rewards[agent] += self.rewards_dict.get(
                 self.reward_names.STATIONARY_PENALTY, 0
             )
-        # if agent != self.scout and not self.eval:
+        if agent != self.scout and not self.eval:
             # we now give guards negative rewards, based on their distance to the scout
-            # distance = self.get_info(agent)['euclidean']
+            distance = self.get_info(agent)['euclidean']
             # if self.prev_distances[agent] is not None:
             #     diff = abs(self.prev_distances[agent] - distance)
             # else:
@@ -400,7 +400,7 @@ class normal_env(raw_env):
             # self.prev_distances[agent] = distance
             # negative of distance differences as reward increment? 
             # self.rewards[agent] += -diff 
-            # self.rewards[agent] += distance / 5
+            self.rewards[agent] += -distance / 5
         
 
         return None
