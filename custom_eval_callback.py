@@ -50,6 +50,7 @@ class CustomEvalCallback(EventCallback):
         evaluate_policy: str,
         eval_env: Union[gym.Env, VecEnv],
         eval_env_config,
+        training_config,
         callback_on_new_best: Optional[BaseCallback] = None,
         callback_after_eval: Optional[BaseCallback] = None,
         log_path: Optional[str] = None,
@@ -75,8 +76,9 @@ class CustomEvalCallback(EventCallback):
             # Give access to the parent
             self.callback_on_new_best.parent = self
 
-        self.n_eval_episodes = eval_env_config.n_eval_episodes
-        self.eval_freq = eval_env_config.eval_freq
+        self.training_config = training_config
+        self.n_eval_episodes = self.training_config.n_eval_episodes
+        self.eval_freq = self.training_config.eval_freq
         self.best_mean_reward = -np.inf
         self.last_mean_reward = -np.inf
         self.deterministic = deterministic
@@ -113,7 +115,10 @@ class CustomEvalCallback(EventCallback):
         else:
             self.evaluate_policy = self.seperate_agent_evaluate
 
-        self.role_mapping = agent_roles * eval_env_config.num_vec_envs
+        vec_role_indexes = np.array(agent_roles * eval_env_config.num_vec_envs)
+        self.role_indexes = [
+            np.where(vec_role_indexes == polid)[0] for polid in np.unique(vec_role_indexes)
+        ]
 
         vec_policy_mapping = np.array(policy_mapping * eval_env_config.num_vec_envs)
         self.policy_agent_indexes = [
@@ -172,7 +177,7 @@ class CustomEvalCallback(EventCallback):
             # Reset success rate buffer
             self._is_success_buffer = []
 
-            policy_episode_rewards, policy_episode_lengths = self.evaluate_policy(
+            policy_episode_rewards, roles_episode_rewards, policy_episode_lengths = self.evaluate_policy(
                 self.model,
                 self.eval_env,
                 n_eval_episodes=self.n_eval_episodes,
@@ -182,7 +187,9 @@ class CustomEvalCallback(EventCallback):
                 warn=self.warn,
                 callback=self._log_success_callback,
             )
-
+            print('roles_episode_rewards', roles_episode_rewards)
+            print('policy_episode_rewards', policy_episode_rewards)
+            print('policy_episode_lengths', policy_episode_lengths)
 
             if self.root_log_path is not None:
                 assert isinstance(policy_episode_rewards, list)
@@ -208,13 +215,16 @@ class CustomEvalCallback(EventCallback):
                     )
             # mean them all
             for polid, policy_episode_reward in enumerate(policy_episode_rewards):
-                policy_episode_rewards[polid] = np.mean(policy_episode_rewards[polid])
+                policy_episode_rewards[polid] = np.mean(policy_episode_reward)
                 policy_episode_lengths[polid] = np.mean(policy_episode_lengths[polid])
-                
 
+            for roid, role_episode_reward in enumerate(roles_episode_rewards):
+                roles_episode_rewards[roid] = np.mean(role_episode_reward)
+                
             # Add to current Logger
             [self.logger.record(f"eval/polid_{polid}_mean_reward", float(mean_reward)) for polid, mean_reward in enumerate(policy_episode_rewards)]
             [self.logger.record(f"eval/polid_{polid}_mean_lengths", float(mean_lengths)) for polid, mean_lengths in enumerate(policy_episode_lengths)]
+            [self.logger.record(f"eval/role_{roid}_mean_reward", float(mean_reward)) for roid, mean_reward in enumerate(roles_episode_rewards)]
             
             # TODO: save each policy based on its own best reward, not jointly.
             mean_policy_reward = np.mean(policy_episode_rewards)
@@ -291,9 +301,10 @@ class CustomEvalCallback(EventCallback):
 
         # initialize evaluation session trackers.
         num_policies = len(self.policy_agent_indexes)
+        num_roles = len(self.role_indexes)
         n_envs = env.num_envs  # num agents times number of vector envs
-        episode_rewards = [[] for _ in range(num_policies)] # nested list, per policy.
-        # each nested list is appended on a per-env basis
+        episode_policy_rewards = [[] for _ in range(num_policies)] # nested list, per policy.
+        episode_roles_rewards = [[] for _ in range(num_roles)]
         episode_lengths = [[] for _ in range(num_policies)] 
         all_clipped_actions = [None] * num_policies
         all_actions = [None] * num_policies
@@ -309,17 +320,25 @@ class CustomEvalCallback(EventCallback):
         # btw n_envs is already the num_vec_envs * num_agents, cuz supersuit and parallel env are nice like that
         # for each env that reaches a ended state, we the reward of that agent-env to episode_rewards.
         # vice versa for episode_lengths
-        current_rewards = [np.zeros(len(policy_agent_index)) 
+        current_policy_rewards = [np.zeros(len(policy_agent_index)) 
                 for policy_agent_index in self.policy_agent_indexes]
+        current_roles_rewards = [np.zeros(len(role_indexes)) 
+                for role_indexes in self.role_indexes]
         current_lengths = [np.zeros(len(policy_agent_index), dtype='int') 
                 for policy_agent_index in self.policy_agent_indexes]
 
         # reset and format last observation
         observations = env.reset()
-        last_obs = simulator.format_env_returns(observations, self.policy_agent_indexes, device=simulator.policies[0].device)
+        last_obs = simulator.format_env_returns(
+            observations,
+            self.policy_agent_indexes,
+            to_tensor=False,
+            device=simulator.policies[0].device
+        )
 
         states = None
         # predict each policy
+
         while (episode_counts < episode_count_targets).any():
             for polid, policy in enumerate(simulator.policies):
                 actions, states = policy.predict(
@@ -349,16 +368,20 @@ class CustomEvalCallback(EventCallback):
             for polid, policy_agent_index in enumerate(self.policy_agent_indexes):
                 step_actions[policy_agent_index] = all_clipped_actions[polid]
 
-            # check placeholder actions?
-            # print('step_actions', step_actions)
+            # we split by policy and by roles.
+            # policywise-split all returns
+            # however role-wise, split only the reward and dones.
+            # this is because we arent running n-roles, but rather n-policies on the observations.
             new_observations, rewards, dones, infos = env.step(step_actions)
-            all_curr_obs = simulator.format_env_returns(new_observations, self.policy_agent_indexes, device=simulator.policies[0].device)
+            all_curr_obs = simulator.format_env_returns(new_observations, self.policy_agent_indexes, device=simulator.policies[0].device, to_tensor=False)
             all_rewards = simulator.format_env_returns(rewards, self.policy_agent_indexes, device=simulator.policies[0].device, to_tensor=False)
             all_dones = simulator.format_env_returns(dones, self.policy_agent_indexes, device=simulator.policies[0].device, to_tensor=False)
             all_infos = simulator.format_env_returns(infos, self.policy_agent_indexes, device=simulator.policies[0].device, to_tensor=False)
-            # print('all_dones', all_dones)
-            # print('step_actions', step_actions)
-
+            
+            all_role_rewards = simulator.format_env_returns(rewards, self.role_indexes, device=simulator.policies[0].device, to_tensor=False)
+            all_roles_dones = simulator.format_env_returns(dones, self.role_indexes, device=simulator.policies[0].device, to_tensor=False)
+            
+            # the following code is hideous. please, avert your eyes.
 
             for polid, (
                 policy_agent_index,
@@ -369,42 +392,30 @@ class CustomEvalCallback(EventCallback):
                 all_reward, # all n_env * num_agents under policy long e.g 6
                 all_done, # all n_env * num_agents under policy long e.g 6
                 all_info, # all n_env * num_agents under policy long e.g 6
-            ) in enumerate(zip(
-                self.policy_agent_indexes,
-                current_rewards,  
-                current_lengths,
-                episode_rewards, 
-                episode_lengths,
-                all_rewards,
-                all_dones,
-                all_infos,
+            ) in enumerate(
+                zip(
+                    self.policy_agent_indexes,
+                    current_policy_rewards,  
+                    current_lengths,
+                    episode_policy_rewards, 
+                    episode_lengths,
+                    all_rewards,
+                    all_dones,
+                    all_infos,
             )):
-                # print(
-                #     policy_agent_indexes,
-                #     current_rewards,  
-                #     current_lengths,
-                #     episode_rewards, 
-                #     episode_lengths,
-                #     all_rewards,
-                #     all_dones,
-                #     all_infos,
-                #     episode_counts,
-                #     episode_count_targets,
-                #     episode_starts,
-                # )
                 # policy-based enumeration: each thing in the big tuple up there are of length n_envs
-                # policy_agent_index is the indexes of envs * num_agents, that correspond to each policy.
-                for enum, index in enumerate(policy_agent_index):
+                # policy_agent_index is the env_indexes of envs * num_agents, that correspond to each policy.
+                for enum, env_index in enumerate(policy_agent_index):
                     current_reward[enum] += all_reward[enum]
                     # print('all_reward[enum]', all_reward[enum])
                     # print('current_rewards', current_rewards)
                     current_length[enum] += 1
 
-                    if episode_counts[index] < episode_count_targets[index]:
+                    if episode_counts[env_index] < episode_count_targets[env_index]:
                         # unpack values so that the callback can access the local variables
                         done = all_done[enum]
                         info = all_info[enum]
-                        episode_starts[index] = done
+                        episode_starts[env_index] = done
 
                         if callback is not None:
                             callback(locals(), globals())
@@ -421,28 +432,46 @@ class CustomEvalCallback(EventCallback):
                                     episode_reward.append(info["episode"]["r"])
                                     episode_length.append(info["episode"]["l"])
                                     # Only increment at the real end of an episode
-                                    episode_counts[index] += 1
+                                    episode_counts[env_index] += 1
                             else:
                                 episode_reward.append(current_reward[enum])
                                 episode_length.append(current_length[enum])
-                                episode_counts[index] += 1
+                                episode_counts[env_index] += 1
                             current_reward[enum] = 0
                             current_length[enum] = 0
+
+            for roid, (role_index,
+                       current_role_rewards,
+                       episode_role_rewards,
+                       ) in enumerate(
+                           zip(
+                               self.role_indexes,
+                               current_roles_rewards,
+                               episode_roles_rewards,
+                            )):
+                print('role_index')
+                for enum, env_index in enumerate(role_index):
+                    current_role_rewards[enum] += all_role_rewards[enum]
+                    if episode_counts[env_index] < episode_count_targets[env_index]:
+                        done = all_roles_dones[enum]
+                        if done:
+                            episode_role_rewards.append(current_role_rewards[enum])
+                            current_role_rewards[enum] = 0
 
             last_obs = all_curr_obs
 
             if render:
                 env.render()
 
-        print('each episode_rewards:')
-        print('lengths', [len(episode_reward) for episode_reward in episode_rewards])
-        print('means', [np.mean(episode_reward) for episode_reward in episode_rewards])
-        mean_reward = [np.mean(episode_reward) for episode_reward in episode_rewards]  # num_policies long
-        std_reward = [np.std(episode_reward) for episode_reward in episode_rewards]
+        # print('each episode_policy_rewards:')
+        # print('lengths', [len(episode_reward) for episode_reward in episode_policy_rewards])
+        # print('means', [np.mean(episode_reward) for episode_reward in episode_policy_rewards])
+        mean_reward = [np.mean(episode_reward) for episode_reward in episode_policy_rewards]  # num_policies long
+        std_reward = [np.std(episode_reward) for episode_reward in episode_policy_rewards]
         if reward_threshold is not None:
             assert mean_reward > reward_threshold, "Mean reward below threshold: " f"{mean_reward:.2f} < {reward_threshold:.2f}"
         if return_episode_rewards:
-            return episode_rewards, episode_lengths
+            return episode_policy_rewards, episode_role_rewards, episode_lengths
 
         return mean_reward, std_reward
 

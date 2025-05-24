@@ -159,7 +159,9 @@ class normal_env(raw_env):
 
         # include here a role_mapping item. This is to make clear which players map to which roles.
         # once again, hardcoded to be [1 0 0 0] due to our lock (which is a significant convenience)
-        self.role_mapping = [1, 0, 0, 0]
+        # self.role_mapping = [1, 0, 0, 0]
+        # scratch that now its 0, 1, 2, 3
+        self.role_mapping = [0, 1, 2, 3]
 
 
     def _render_frame(self):

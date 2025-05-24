@@ -4,12 +4,12 @@ env:
   train:
     # rewards:
     num_vec_envs: 2
-    env_type: 'binary'
+    env_type: 'normal'
     novice: True
     num_iters: 100
     eval_mode: True
     frame_stack_size: 4
-    render_mode:
+    render_mode: 'rgb_array'
 
 
   eval:
@@ -19,8 +19,9 @@ env:
     novice: True
     num_iters: 100
     eval_mode: True
-    frame_stack_size: 1
-    render_mode:
+    frame_stack_size: 4
+    render_mode: 'rgb_array'
+
 
 
 # the actual mapping from agents to policies is independent of policy configurations
@@ -29,19 +30,168 @@ policies:
   0:
     algorithm: ModifiedPPO
     policy: 'MlpPolicy'
+    # path: /mnt/e/BrainHack-TIL25/checkpoints/do_NOT_delete/train_0bf0b/train_0bf0b_00008/novice_ppo_long_binaryenv_varyall_novice_True_run_train_0bf0b_00008_4915200_steps.zip
 
 
   1: 
     algorithm: ModifiedPPO
     policy: 'MlpPolicy'
+    # path:
 
 
   
 train:
   n_steps: 1000
+  training_iters: 6
+  n_eval_episodes: 30
+  num_evals: 2
   root_dir: '/mnt/e/BrainHack-TIL25'
   # all callbacks and their configurations here
   callbacks:
 
 
   # other training configurations
+
+# for hyperparam tuning.
+# configurations here will override others of the same name in
+# earlier sections, per tuning run.
+# to 
+tune:
+  # independent of policies
+  n_steps:
+      type: choice
+      choices: [512]
+
+  num_iters:
+    type: choice
+    choices: [100, 300, 1000]
+
+  guard_captures:
+    type: choice
+    choices: [50, 200, 500]
+
+  scout_captured:
+    type: choice
+    choices: [-50, -200, -500]
+
+  scout_recon:
+    type: choice
+    choices: [1, 2]
+
+  scout_mission:
+    type: choice
+    choices: [5, 10, 20]
+
+  scout_step_empty_tile:
+    type: choice
+    choices: [-2, -1, 0]
+
+  frame_stack_size:
+    type: choice
+    choices: [4]
+
+  novice:
+    type: choice
+    choices: [true]
+  
+  # policy specific
+  policies:
+    0:
+      learning_rate:
+        type: loguniform
+        min: 1e-6
+        max: 1e-4
+
+      gamma:
+        type: uniform
+        min: 0.80
+        max: 0.99
+
+      batch_size:
+        type: choice
+        choices: [4, 8, 16]
+
+      n_epochs:
+        type: choice
+        choices: [5, 7, 10]
+
+      vf_coef:
+        type: uniform
+        min: 0.35
+        max: 0.50
+
+      ent_coef:
+        type: loguniform
+        min: 1e-6
+        max: 1e-4
+
+      gae_lambda:
+        type: uniform
+        min: 0.80
+        max: 0.99
+
+      distance_penalty:
+        type: choice
+        choices: [false, true]
+
+      wall_collision:
+        type: choice
+        choices: [-2, -1, 0]
+
+      stationary_penalty:
+        type: choice
+        choices: [-2, -1, 0]
+
+      looking:
+        type: choice
+        choices: [-0.5, -0.2, 0]
+
+    1:
+      learning_rate:
+        type: loguniform
+        min: 1e-6
+        max: 1e-4
+
+      gamma:
+        type: uniform
+        min: 0.80
+        max: 0.99
+
+      batch_size:
+        type: choice
+        choices: [4, 8, 16]
+
+      n_epochs:
+        type: choice
+        choices: [5, 7, 10]
+
+      vf_coef:
+        type: uniform
+        min: 0.35
+        max: 0.50
+
+      ent_coef:
+        type: loguniform
+        min: 1e-6
+        max: 1e-4
+
+      gae_lambda:
+        type: uniform
+        min: 0.80
+        max: 0.99
+
+      distance_penalty:
+        type: choice
+        choices: [false, true]
+
+      wall_collision:
+        type: choice
+        choices: [-2, -1, 0]
+
+      stationary_penalty:
+        type: choice
+        choices: [-2, -1, 0]
+
+      looking:
+        type: choice
+        choices: [-0.5, -0.2, 0]

@@ -25,6 +25,7 @@ from stable_baselines3.common.utils import safe_mean
 from einops import rearrange
 from supersuit.vector.markov_vector_wrapper import MarkovVectorEnv
 
+from stable_baselines3.common.callbacks import BaseCallback, CallbackList, ConvertCallback, ProgressBarCallback
 
 from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
@@ -36,7 +37,7 @@ class DummyGymEnv(gymnasium.Env):
         self.action_space = action_space
 
 
-class RLRolloutSimulator:
+class RLRolloutSimulator(OnPolicyAlgorithm):
     """
     Acts as a wrapper around multiple policies and environments, calling them during rollouts
     and calling the policies train method afterwards.
@@ -76,9 +77,14 @@ class RLRolloutSimulator:
             - 
 
         """
-        self.train_env = train_env
+        self.env = train_env
+        self.num_vec_envs = self.env.num_envs
         self.policies_config = policies_config
         self.policy_mapping = policy_mapping
+
+        # check if policy_mapping and policy config have the same number of policies
+        assert len(policies_config) == len(np.unique(np.array(self.policy_mapping))), f'Assertion failed. Environment suggests that there are {len(np.unique(self.policy_mapping))} ' \
+            f'total policies, but recieved policy config only has {len(policies_config)} policies.'
         self.policy_agent_indexes = self.generate_policy_agent_indexes(
             n_envs=train_env_config.num_vec_envs, policy_mapping=self.policy_mapping
         )
@@ -87,13 +93,13 @@ class RLRolloutSimulator:
         self.n_steps = n_steps  # we forcibly standardize this across all agents, because if one collects fewer n_steps
         # than the other, that would be kinda wack
 
-        assert len(self.train_env.observation_space.shape) == 1, 'Assertion failed. We only support training environments' \
+        assert len(self.env.observation_space.shape) == 1, 'Assertion failed. We only support training environments' \
             'where everything is flattened, just to standardize things.'
         # observation_space is flattened per agent, then concatenated across all agent.
         # this means that if the original flattened dict space is 36
 
-        self.observation_space = self.train_env.observation_space
-        self.action_space = self.train_env.action_space
+        self.observation_space = self.env.observation_space
+        self.action_space = self.env.action_space
         self._vec_normalize_env = None
 
         self.tensorboard_log = tensorboard_log
@@ -103,29 +109,43 @@ class RLRolloutSimulator:
         self.dummy_envs = [DummyVecEnv([env_fn] * len(policy_index)) for policy_index in self.policy_agent_indexes]
         # this is a wrapper class, so it will not hold any states like
         # buffer_size, or action_noise. pass those straight to DQN.
-        print(self.policy_agent_indexes)
+
         self.policies = []
         _policies_config = deepcopy(policies_config)
         for polid, policy_config in _policies_config.items():
             algo_type = eval(policy_config.algorithm)  # this will fail if the policy specified in the config
             # has not yet been imported. TODO do a registry if we aren't lazy?
             del policy_config.algorithm
+            if hasattr(policy_config, 'n_steps'):
+                assert policy_config.n_steps == self.n_steps, 'Assertion failed.' \
+                    f'You passed in different n_steps for polid {polid} when you '
+            else:
+                policy_config.n_steps = self.n_steps
 
-            self.policies.append(
-                algo_type(
+            if hasattr(policy_config, 'path'):
+                policy = algo_type.load(
                     env = self.dummy_envs[polid],
                     **policy_config
                 )
+            else:
+                policy = algo_type(
+                    env = self.dummy_envs[polid],
+                    **policy_config
+                )
+
+            self.policies.append(
+                policy
             )
+
+        self.num_policies = len(self.policies)
 
         
     def learn(
         self,
         total_timesteps: int,
-        eval_callback: Optional[List[List[MaybeCallback]]] = None,
-        callbacks: Optional[List[List[MaybeCallback]]] = None,
+        callbacks: MaybeCallback = None,
         log_interval: int = 1,
-        tb_log_name: str = "PPO",
+        tb_log_name: str = "RLRolloutSimulator",
         reset_num_timesteps: bool = True,
         progress_bar: bool = False,
     ):
@@ -134,13 +154,7 @@ class RLRolloutSimulator:
 
         target: collect rollbacks and train up till total_timesteps.
         """
-        print(f'NOTE: TOTAL TIMESTEPS {total_timesteps} INCLUDES NUMBER OF ENVIRONMENTS (currently {self.num_vec_envs}), AND IS NOT A PER-ENV BASIS')
-        if eval_callback is not None:
-            eval_callback = self._init_callback(eval_callback)
-
-        if callbacks is not None:
-            assert len(callbacks) == self.num_policies, 'callbacks must a list of num_policies number of nested lists'
-            assert all(isinstance(callback, list) for callback in callbacks), 'callbacks must a list of num_policies number of nested lists'
+        print(f'NOTE: TOTAL TIMESTEPS {total_timesteps} INCLUDES NUMBER OF AGENT * VEC ENVIRONMENTS (currently {self.num_vec_envs}), AND IS NOT A PER-ENV BASIS')
 
         self.num_timesteps = 0
         all_total_timesteps = []
@@ -151,7 +165,7 @@ class RLRolloutSimulator:
             tb_log_name,
             reset_num_timesteps,
         )
-        logdir = self.logger.dir
+        logdir = self._logger.dir
 
         # Setup for each policy. Reset things, setup timestep tracking things.
         # replace certain agent attributes
@@ -181,11 +195,10 @@ class RLRolloutSimulator:
                 reset_num_timesteps,
             )
 
-            callbacks[polid] = policy._init_callback(callbacks[polid])
+        callbacks = self._init_callback(callbacks)
 
         # Call all callbacks back to call all backs, callbacks
-        for callback in callbacks:
-            callback.on_training_start(locals(), globals())
+        callbacks.on_training_start(locals(), globals())
 
         # self.env returns a dict, where each key is (M * N, ...), M is number of envs, N is number of agents.
         # we determine number of envs based on the output shape (should find a better way to do this)
@@ -200,9 +213,10 @@ class RLRolloutSimulator:
                 last_obs=reset_obs,
                 n_rollout_steps=n_rollout_steps,  # rollout increments timesteps by number of envs
                 callbacks=callbacks,
-                eval_callback=eval_callback,
             )
             self.num_timesteps += rollout_timesteps
+            print('log_interval', log_interval)
+            print('timesteps', self.num_timesteps, total_timesteps)
 
             # agent training.
             for polid, policy in enumerate(self.policies):
@@ -237,16 +251,13 @@ class RLRolloutSimulator:
                 print(f'------------POLICY {polid} TRAIN TIME-------------')
                 print(time.time() - start)
 
-        for callback in callbacks:
-            callback.on_training_end()
+        callbacks.on_training_end()
 
     def collect_rollouts(
             self,
             last_obs,
             n_rollout_steps: int,
             callbacks: list = [],
-            eval_callback: Optional[MaybeCallback] = None,
-            eval: bool = False,
         ):
         """
         Helper function to collect rollouts (sample the env and feed observations into the agents, vice versa)
@@ -270,23 +281,21 @@ class RLRolloutSimulator:
         all_dones = [None] * self.num_policies
         all_infos = [None] * self.num_policies
         all_actions = [None] * self.num_policies
-        all_lstm_states = [None] * self.num_policies
         all_values = [None] * self.num_policies
         all_log_probs = [None] * self.num_policies
         total_rewards = [[] for _ in range(self.num_policies)] 
         
         n_steps = 0
         # before formatted, last_obs is the direct return of self.env.reset()
-        step_actions = np.empty(self.num_agents * self.num_vec_envs, dtype=np.int64)
-        policy_agent_indexes = self.get_policy_agent_indexes_from_viewcone(last_obs=last_obs)
-        # the boolean mask to apply on each observation, mapping each to each policy.
-        # as a sanity check, this should be [1 0 0 0] * self.num_vec_envs since self.env is freshly initialized.
-        last_obs_buffer = self.format_env_returns(last_obs, policy_agent_indexes, to_tensor=False)
-        last_obs = self.format_env_returns(last_obs, policy_agent_indexes, device=self.policies[0].device, to_tensor=True)
+        step_actions = np.empty(self.num_vec_envs, dtype=np.int64)
+
+        last_obs_buffer = self.format_env_returns(last_obs, self.policy_agent_indexes, to_tensor=False)
+        last_obs = self.format_env_returns(last_obs, self.policy_agent_indexes, device=self.policies[0].device, to_tensor=True)
 
         # iterate over policies, and do pre-rollout setups.
         # start = time.time()
-        for polid, (policy, num_envs) in enumerate(zip(self.policies, [self.num_guard_envs, self.num_scout_envs])):
+        for polid, (policy, policy_index) in enumerate(zip(self.policies, self.policy_agent_indexes)):
+            num_envs = len(policy_index)
             policy.policy.set_training_mode(False)
             policy.n_steps = 0
             policy.rollout_buffer.reset()
@@ -294,7 +303,7 @@ class RLRolloutSimulator:
             if policy.use_sde:
                 policy.policy.reset_noise(num_envs)  # type: ignore[operator]
 
-            [callback.on_rollout_start() for callback in callbacks]
+            callbacks.on_rollout_start()
             policy._last_episode_starts = np.ones((num_envs,), dtype=bool)
             all_last_episode_starts[polid] = policy._last_episode_starts
         # print('------------PRE ROLLOUT TIME-------------')
@@ -303,9 +312,7 @@ class RLRolloutSimulator:
 
         # do rollout
         while n_steps < n_rollout_steps:
-            # print('n_steps', n_steps)
             with torch.no_grad():
-                # start = time.time()
                 for polid, policy in enumerate(self.policies):
                     episode_starts = torch.tensor(policy._last_episode_starts, dtype=torch.float32, device=policy.device)
                     (
@@ -332,36 +339,27 @@ class RLRolloutSimulator:
                 # print('------------POLICY FORWARD TIME-------------')
                 # print(time.time() - start)
 
-            for polid, policy_agent_index in enumerate(policy_agent_indexes):
+            for polid, policy_agent_index in enumerate(self.policy_agent_indexes):
                 step_actions[policy_agent_index] = all_clipped_actions[polid]
 
             # start = time.time()
             # actually step in the environment
             obs, rewards, dones, infos = self.env.step(step_actions)
-            # print('rewards', rewards)
-            policy_agent_indexes = self.get_policy_agent_indexes_from_viewcone(last_obs=obs)
+
             # print('policy_agent_indexes', policy_agent_indexes)
-            all_curr_obs = self.format_env_returns(obs, policy_agent_indexes=policy_agent_indexes, to_tensor=True, device=self.policies[0].device)
-            all_curr_obs_buffer = self.format_env_returns(obs, policy_agent_indexes=policy_agent_indexes, to_tensor=False)
-            all_rewards = self.format_env_returns(rewards, policy_agent_indexes=policy_agent_indexes, to_tensor=False)
-            all_dones = self.format_env_returns(dones, policy_agent_indexes=policy_agent_indexes, to_tensor=False)
-            all_infos = self.format_env_returns(infos, policy_agent_indexes=policy_agent_indexes, to_tensor=False)
-            # print('all_curr_obs', all_curr_obs)
-            # print('all_rewards', all_rewards)
-            # print('------------STEP FORWARD TIME-------------')
+            all_curr_obs = self.format_env_returns(obs, policy_agent_indexes=self.policy_agent_indexes, to_tensor=True, device=self.policies[0].device)
+            all_curr_obs_buffer = self.format_env_returns(obs, policy_agent_indexes=self.policy_agent_indexes, to_tensor=False)
+            all_rewards = self.format_env_returns(rewards, policy_agent_indexes=self.policy_agent_indexes, to_tensor=False)
+            all_dones = self.format_env_returns(dones, policy_agent_indexes=self.policy_agent_indexes, to_tensor=False)
+            all_infos = self.format_env_returns(infos, policy_agent_indexes=self.policy_agent_indexes, to_tensor=False)
 
             for policy in self.policies:
                 policy.num_timesteps += self.num_vec_envs
 
-            for callback in callbacks:
-                callback.update_locals(locals())
+            callbacks.update_locals(locals())
             
             # must-have for checkpointing
-            [callback.on_step() for callback in callbacks]
-            # specific callback for eval
-            if eval_callback is not None:
-                eval_callback.on_step()
-
+            callbacks.on_step()
 
             n_steps += self.num_vec_envs
             # start = time.time()
@@ -390,9 +388,7 @@ class RLRolloutSimulator:
             last_obs = all_curr_obs
             all_last_episode_starts = all_dones
 
-
-        for callback in callbacks:
-            callback.on_rollout_end()
+        callbacks.on_rollout_end()
 
         return total_rewards, n_steps
 
@@ -410,6 +406,31 @@ class RLRolloutSimulator:
             n_steps=self.n_steps,
             **kwargs
             )
+    
+    def _init_callback(
+        self,
+        callback: MaybeCallback,
+        progress_bar: bool = False,
+    ) -> BaseCallback:
+        """
+        :param callback: Callback(s) called at every step with state of the algorithm.
+        :param progress_bar: Display a progress bar using tqdm and rich.
+        :return: A hybrid callback calling `callback` and performing evaluation.
+        """
+        # Convert a list of callbacks into a callback
+        if isinstance(callback, list):
+            callback = CallbackList(callback)
+
+        # Convert functional callback to object
+        if not isinstance(callback, BaseCallback):
+            callback = ConvertCallback(callback)
+
+        # Add progress bar callback
+        if progress_bar:
+            callback = CallbackList([callback, ProgressBarCallback()])
+
+        callback.init_callback(self)
+        return callback
 
     @staticmethod
     def format_env_returns(
@@ -652,25 +673,39 @@ class RLRolloutSimulator:
 
         return policy_agent_indexes
 
-    def get_policy_agent_indexes_from_viewcone(self, last_obs):
-        # very hardcoded solution for now.
-        # if last_obs is 2 dim, the 1st is likely the env-agent dimension, and the latter is the frame-stacked * original version
-        # elif last_obs is 4dim, the 1st is as above, second is the frame-stack dim, and the third is 7, 5 (viewcone dim)
-        # TODO: ALL HARDCODED! PLEASE CHANGE THIS (i definitely wont)
+    @staticmethod
+    def get_scout_from_obs(observation, already_bits=False, is_flattened=True, frame_stack_dim=0):
         """
+        Overall handler function to do everything for us.
+        Observation may be a dictionary or simple numpy array.
+        It may be frame-stacked. It may also have been vectorized.
+        Whatever way it is, we will rearrange it into an N, (C R B) array, where C R B values are hardcoded.
         """
-        if len(last_obs.shape) == 2:
-            last_obs = rearrange(last_obs, 
-                'A (S C R B) -> A S B C R', 
+
+        if isinstance(observation, dict):
+            if 'scout' in observation:
+                print('SCOUT IN OBS????', observation['scout'])
+                eghtyjreg
+            else:
+                observation = observation['viewcone']
+
+        if is_flattened:  # have to rely on user given frame_stack_dim to know along which dim was stacked
+            if frame_stack_dim == -1:
+                observation = rearrange(observation,
+                    '(C R B N) -> (N C R B)',
                 R=5, C=7, B=8)
-            is_scout = last_obs[:, 0, 5, 2, 2]
-        else:
-            bits = np.unpackbits(last_obs[:, :, 2, 2][np.newaxis, :, :].astype(np.uint8), axis=0)
-            is_scout = bits[5, :, 0]
 
-        policy_agent_indexes = [
-            np.where(is_scout == 0)[0], np.where(is_scout == 1)[0]
-        ]
 
-        return policy_agent_indexes
+        # we expect by this point, some (N, ...) array. the next code will flatten it into
+        if not already_bits:
+            observation = np.unpackbits(observation.astype(np.uint8))
+
+        # by this point, we expect it to be a 
+        print('observation before binary_obs', observation, observation.shape)
+        binary_obs = rearrange(observation, 
+            '(N C R B) -> N B C R', 
+            R=5, C=7, B=8)
+        is_scout = binary_obs[0, 5, 2, 2]
+
+        return is_scout
     

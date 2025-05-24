@@ -282,11 +282,11 @@ if __name__ == "__main__":
     if args.train:
 
         pbt = PopulationBasedTraining(
-        time_attr="training_iteration",
-        metric="all_scores",
-        mode="max",
-        perturbation_interval=5,  # every n trials
-        hyperparam_mutations={
+            time_attr="training_iteration",
+            metric="all_scores",
+            mode="max",
+            perturbation_interval=5,  # every n trials
+            hyperparam_mutations={
                 "learning_rate": tune.loguniform(1e-6, 1e-4),
                 "gamma": tune.uniform(0.80, 0.99),
                 "n_steps": tune.choice([512]),
@@ -299,14 +299,14 @@ if __name__ == "__main__":
                 "novice": tune.choice([True]),
                 "distance_penalty": tune.choice([False, True]),
                 "num_iters": tune.choice([100, 300, 1000]),
-                # "guard_captures": tune.choice([50, 200, 500]),
-                # "scout_captured": tune.choice([-50, -200, -500]),
-                # "scout_recon": tune.choice([1, 2]),
-                # "scout_mission": tune.choice([5, 10, 20]),
-                # "scout_step_empty_tile": tune.choice([-2, -1, 0]),
-                # "wall_collision": tune.choice([-2, -1, 0]),
-                # "stationary_penalty": tune.choice([-2, -1, 0]),
-                # "looking": tune.choice([-0.5, -0.2, 0]),
+                "guard_captures": tune.choice([50, 200, 500]),
+                "scout_captured": tune.choice([-50, -200, -500]),
+                "scout_recon": tune.choice([1, 2]),
+                "scout_mission": tune.choice([5, 10, 20]),
+                "scout_step_empty_tile": tune.choice([-2, -1, 0]),
+                "wall_collision": tune.choice([-2, -1, 0]),
+                "stationary_penalty": tune.choice([-2, -1, 0]),
+                "looking": tune.choice([-0.5, -0.2, 0]),
             })
         tuner = Tuner(
             tune.with_resources(train, resources={"cpu": 5, "gpu": 0.5}),
