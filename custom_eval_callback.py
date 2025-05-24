@@ -182,8 +182,6 @@ class CustomEvalCallback(EventCallback):
 
             # Reset success rate buffer
             self._is_success_buffer = []
-            print('self.role_indexes', self.role_indexes)
-            print('self.policy_agent_indexes', self.policy_agent_indexes)
 
             policy_episode_rewards, roles_episode_rewards, policy_episode_lengths = self.evaluate_policy(
                 self.model,
@@ -195,9 +193,6 @@ class CustomEvalCallback(EventCallback):
                 warn=self.warn,
                 callback=self._log_success_callback,
             )
-            print('roles_episode_rewards', roles_episode_rewards)
-            print('policy_episode_rewards', policy_episode_rewards)
-            print('policy_episode_lengths', policy_episode_lengths)
 
             if self.root_log_path is not None:
                 assert isinstance(policy_episode_rewards, list)

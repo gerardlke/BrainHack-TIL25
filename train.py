@@ -314,17 +314,17 @@ if __name__ == '__main__':
             hyperparam_mutations=merged)
     trainable_cls = tune.with_parameters(CustomTrainer, base_config=base_config)
     tuner = tune.Tuner(
-        trainable_cls,
+        tune.with_resources(trainable_cls, resources={"cpu": 5, "gpu": 0.5}),
         tune_config=tune.TuneConfig(
                 scheduler=pbt,
-                num_samples=1,
-                reuse_actors=True,
+                num_samples=20,
                 max_concurrent_trials=1,
         ),
         run_config=tune.RunConfig(
             name='test',
             storage_path=f"{base_config.train.root_dir}/ray_results",
-            verbose=1
+            verbose=1,
+            stop={"training_iteration": 1},
         )
     )
 

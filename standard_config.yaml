@@ -9,8 +9,7 @@ env:
     num_iters: 100
     eval_mode: True
     frame_stack_size: 4
-    render_mode: 'rgb_array'
-
+    render_mode:
 
   eval:
     # rewards:
@@ -20,7 +19,7 @@ env:
     num_iters: 100
     eval_mode: True
     frame_stack_size: 4
-    render_mode: 'rgb_array'
+    render_mode:
 
 
 
@@ -41,12 +40,11 @@ policies:
 agent_roles: [0, 1, 2, 3]
 policy_mapping: [0, 0, 0, 0]
 
-  
 train:
   n_steps: 1000
-  training_iters: 20
-  n_eval_episodes: 30
-  num_evals: 20
+  training_iters: 50
+  n_eval_episodes: 20
+  num_evals: 10
   root_dir: '/mnt/e/BrainHack-TIL25'
   # all callbacks and their configurations here
   callbacks:
@@ -102,7 +100,7 @@ tune:
       learning_rate:
         type: loguniform
         min: 1e-6
-        max: 1e-4
+        max: 1e-3
 
       gamma:
         type: uniform
