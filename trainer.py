@@ -31,6 +31,8 @@ from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import obs_as_tensor
 
+from sb3_contrib.
+
 class DummyGymEnv(gymnasium.Env):
     def __init__(self, observation_space, action_space):
         self.observation_space = observation_space

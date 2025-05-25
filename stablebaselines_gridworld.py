@@ -45,26 +45,26 @@ from einops import rearrange
 from til_environment.gridworld import raw_env
 
 from sb3_contrib.common.envs import InvalidActionEnvDiscrete
-from sb3_contrib.common.wrappers import ActionMasker
+from pettingzoo.utils.wrappers import BaseWrapper
 
 
 def build_env(
     num_vec_envs,
     reward_names,
     rewards_dict,
+    binary,
+    action_masking,
     env_wrappers: list[BaseWrapper] | None = None,
     render_mode: str | None = None,
-    env_type: str = 'normal',
     eval_mode: bool = False,
     novice: bool = True,
     debug: bool = False,
-    action_masking: bool = True,
     frame_stack_size: int = 4,
     **kwargs,
 ):
     """
     Define configurations of our environment.
-
+    TODO: update this.
     Args:
         - reward_names: customized RewardNames class to pass to the class init
         - rewards_dict: rewards dictionary to specify exactly what values
@@ -82,23 +82,20 @@ def build_env(
         - frame_stack_size: how many past frames to stack, mutates the observation space
         **kwargs: other kwargs to pass to the environment class
     """
-    if env_type == 'normal':
-        to_build = normal_env
-    elif env_type == 'binary':
-        to_build = binary_viewcone_env
-    else:
-        raise AssertionError('not accepted env_type.')
 
-    env = to_build(
+    env = modified_env(
         render_mode=render_mode,
         reward_names=reward_names,
         rewards_dict=rewards_dict,
         eval=eval_mode,
         novice=novice,
         debug=debug,
+        action_masking=action_masking,
+        binary=binary,
         **kwargs
     )
-    
+    if action_masking:
+        env = ActionMaskWrapper(env)
     if env_wrappers is None:
         env_wrappers = [
             FlattenDictWrapper,
@@ -113,8 +110,6 @@ def build_env(
     # Provides a wide variety of helpful user errors
     env = wrappers.OrderEnforcingWrapper(env)
     
-    if action_masking:
-        env = ActionMasker(env, mask_fn)
     parallel_env = aec_to_parallel(env)
     frame_stack = ss.frame_stack_v2(parallel_env, stack_size=frame_stack_size, stack_dim=0)
     vec_env = ss.pettingzoo_env_to_vec_env_v1(frame_stack)
@@ -123,12 +118,6 @@ def build_env(
     return env, vec_env
 
 
-def mask_fn(env: gymnasium.Env) -> np.ndarray:
-    # Do whatever you'd like in this function to return the action mask
-    # for the current env. In this example, we assume the env has a
-    # helpful method we can rely on.
-    return env.valid_action_mask()
-
 """
 TODO: things to try for our environments:
 1. Negative reward if agents run into walls or stays (incentivises non trivial exploration)
@@ -136,7 +125,37 @@ TODO: things to try for our environments:
 3. See if you can exploit distance from scout into some latent state of the model (recurrentPPO?)
 """
 
-class normal_env(raw_env):
+class ActionMaskWrapper(BaseWrapper):
+    """
+    Env Wrapper to do action masking, hardcoded to our return type
+    Because we usually flattendict on observation outputs, action spaces will be flattened with them too.
+    This is problematic, but we'll find some way to pass the action_mask boolean state to downstream components.
+
+    Anyways wrap this before flatten dict wrapper so nothing implodes
+    """
+    def observe(self, agent):
+        obs = self.env.observe(agent)
+        # Compute mask for current agent based on env state
+        action_mask = self.compute_mask(agent)
+
+        if isinstance(obs, dict):
+            return obs.update({'action_mask': action_mask})
+        else:
+            return {
+                "observation": obs,
+                "action_mask": action_mask
+            }
+
+    def compute_mask(self, agent):
+        # Define custom logic here
+        # For example, disallow some actions based on internal state
+        mask = np.ones(self.env.action_space(agent).n, dtype=np.int8)
+        # e.g., disable action 2:
+        mask[2] = 0
+        return mask
+
+
+class modified_env(raw_env):
     """
     yoink provided env and add some stuff to it
 
@@ -146,6 +165,8 @@ class normal_env(raw_env):
     def __init__(self,
             reward_names,
             rewards_dict,
+            binary,
+            action_masking,
             num_iters=1000,
             eval=False, 
             collisions=True,
@@ -154,6 +175,8 @@ class normal_env(raw_env):
         **kwargs):
         # self.rewards_dict is defined in super init call
         super().__init__(**kwargs)
+        self.binary = binary
+        self.action_masking = action_masking
         self.num_iters = num_iters
         self.reward_names = reward_names
         self.rewards_dict = rewards_dict
@@ -530,6 +553,43 @@ class normal_env(raw_env):
 
     @functools.lru_cache(maxsize=None)
     def observation_space(self, agent: AgentID):
+        # TODO: tidy ts up nga
+        if self.binary:
+            if self.viewcone_only:
+                return Dict(
+                    {
+                        "viewcone": Box(
+                            0,
+                            1,
+                            shape=(
+                                8,  # hardcode lol
+                                self.viewcone_length,
+                                self.viewcone_width,
+                            ),
+                            dtype=np.int64,
+                        ),
+                    }
+                )
+            else:
+                return Dict(
+                    {
+                        "viewcone": Box(
+                            0,
+                            1,
+                            shape=(
+                                8,  # hardcode lol
+                                self.viewcone_length,
+                                self.viewcone_width,
+                            ),
+                            dtype=np.int64,
+                        ),
+                    "direction": Discrete(len(Direction)),
+                    "scout": Discrete(2),
+                    "location": Box(0, self.size, shape=(2,), dtype=np.int64),
+                    "step": Box(0, self.num_iters + 1, shape=(1,)),
+                }
+            )
+            
         if self.viewcone_only:
             return Dict(
                 {
@@ -627,60 +687,7 @@ class normal_env(raw_env):
                 # gsdfSGdFGF
 
     def observe(self, agent):
-        # run super method, but prune to only return the viewcone observation.
-        # this will break rendering for now.
-        observations = super().observe(agent)
-        if self.viewcone_only:
-            return observations['viewcone']
-
-        return observations
-        
-class binary_viewcone_env(normal_env):
-    # yoink brainhack code but change some tings
-    """
-    ok so now make it into a 3d box where the viewcone is binarized
-    """
-    @functools.lru_cache(maxsize=None)
-    def observation_space(self, agent: AgentID):
-        """
-        Binary viewcone. must be flattened since after binarizing, result viewcone will be 3D, which will not support frame stacking.
-        """
-        if self.viewcone_only:
-            return Dict(
-                {
-                    "viewcone": Box(
-                        0,
-                        1,
-                        shape=(
-                            8,  # hardcode lol
-                            self.viewcone_length,
-                            self.viewcone_width,
-                        ),
-                        dtype=np.int64,
-                    ),
-                }
-            )
-        else:
-            return Dict(
-                {
-                    "viewcone": Box(
-                        0,
-                        1,
-                        shape=(
-                            8,  # hardcode lol
-                            self.viewcone_length,
-                            self.viewcone_width,
-                        ),
-                        dtype=np.int64,
-                    ),
-                "direction": Discrete(len(Direction)),
-                "scout": Discrete(2),
-                "location": Box(0, self.size, shape=(2,), dtype=np.int64),
-                "step": Box(0, self.num_iters + 1, shape=(1,)),
-            }
-        )
-
-    def observe(self, agent):
+        def observe(self, agent):
         """
         Returns the observation of the specified agent.
         """
@@ -716,17 +723,14 @@ class binary_viewcone_env(normal_env):
                 )
 
         bit_planes = np.unpackbits(view.astype(np.uint8))  # made R C B into (R C B)
-
-        if not self.viewcone_only:
-            return {
-                "viewcone": bit_planes,
-                "direction": self.agent_directions[agent],
-                "location": self.agent_locations[agent],
-                "scout": 1 if agent == self.scout else 0,
-                "step": self.num_moves,
-            }
-        else:
-            return {
-                "viewcone": bit_planes
-            }
         
+        if self.viewcone_only:
+            return view
+
+        return {
+            "viewcone": view,
+            "direction": self.agent_directions[agent],
+            "location": self.agent_locations[agent],
+            "scout": 1 if agent == self.scout else 0,
+            "step": self.num_moves,
+        }

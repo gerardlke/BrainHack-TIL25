@@ -4,7 +4,7 @@ env:
   train:
     # rewards:
     num_vec_envs: 2
-    env_type: 'binary'
+    binary: True
     novice: True
     num_iters: 100
     eval_mode: False
@@ -17,7 +17,7 @@ env:
   eval:
     # rewards:
     num_vec_envs: 1
-    env_type: 'binary'
+    binary: True
     novice: True
     num_iters: 100
     eval_mode: True
@@ -33,9 +33,9 @@ env:
 # (will b handled in trainer)
 policies:
   0:
-    algorithm: MaskedPPO
+    algorithm: MaskablePPO
     policy: 'MlpPolicy'
-    path: /mnt/e/BrainHack-TIL25/results/do_NOT_delete/train_0bf0b/train_0bf0b_00008/novice_ppo_long_binaryenv_varyall_novice_True_run_train_0bf0b_00008_4915200_steps.zip
+    # path: /mnt/e/BrainHack-TIL25/results/do_NOT_delete/train_0bf0b/train_0bf0b_00008/novice_ppo_long_binaryenv_varyall_novice_True_run_train_0bf0b_00008_4915200_steps.zip
 
 agent_roles: [0, 1, 2, 3]
 policy_mapping: [0, 0, 0, 0]

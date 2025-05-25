@@ -357,7 +357,7 @@ if __name__ == '__main__':
         tune_config=tune.TuneConfig(
                 scheduler=pbt,
                 num_samples=1000,
-                max_concurrent_trials=4,
+                max_concurrent_trials=1,
         ),
         run_config=tune.RunConfig(
             name='test',
