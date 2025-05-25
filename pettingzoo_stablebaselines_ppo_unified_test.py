@@ -21,7 +21,7 @@ from ray.tune import Tuner
 from ray.air import session
 from ray.tune.schedulers import PopulationBasedTraining
 from stable_baselines3.common.utils import configure_logger, obs_as_tensor
-from modifiedppo import ModifiedPPO
+from otherppos import ModifiedPPO, ModifiedMaskedPPO
 from stable_baselines3.common.callbacks import (
     EvalCallback,
     CheckpointCallback,

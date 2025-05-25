@@ -21,7 +21,7 @@ COPY src .
 COPY model_folder /workspace/model_folder
 
 # Starts your model server.
-CMD uvicorn rl_server:app --port 5004 --host 0.0.0.0
+CMD uvicorn rl_server_4pol:app --port 5004 --host 0.0.0.0
 
 # til submit runs docker tag, docker push, and gcloud ai models upload
 

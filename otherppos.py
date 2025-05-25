@@ -13,6 +13,7 @@ from stable_baselines3.common.policies import ActorCriticCnnPolicy, ActorCriticP
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import explained_variance, get_schedule_fn, obs_as_tensor
 from stable_baselines3.ppo import PPO
+from sb3_contrib.ppo_mask.ppo_mask import MaskablePPO
 
 SelfPPO = TypeVar("SelfPPO", bound="PPO")
 
@@ -40,7 +41,6 @@ class ModifiedPPO(PPO):
                     '(C R B N) -> (N C R B)',
                 R=5, C=7, B=8)
 
-
         # we expect by this point, some (N, ...) array. the next code will flatten it into
         if not already_bits:
             observation = np.unpackbits(observation.astype(np.uint8))
@@ -55,23 +55,7 @@ class ModifiedPPO(PPO):
         return is_scout
     
     
-    
-    
-    def run_tests(self):
-        # for box viewcones
-        test_case_1 = np.random.randint(0, 255, (7, 5))  # during true eval, observation we get will be just a 7 by 5 tensor
-        test_case_2 = np.random.randint(0, 2, (16, 7, 5))  # only vectorized environment or frame stacking
-        test_case_3 = np.random.randint(0, 2, (16, 16, 7, 5))  # both vectorized environment and frame stacking
-        
-        self.get_scout_from_obs(test_case_1, already_bits=False, is_flattened=False)
-        self.get_scout_from_obs(test_case_2, already_bits=False, is_flattened=False)
-        self.get_scout_from_obs(test_case_3, already_bits=False, is_flattened=False, frame_stack_dim=0)
-
-        # for flattened, binarized viewcones
-        test_case_4 = np.random.randint(0, 255, (8 * 7 * 5))
-        test_case_5 = np.random.randint(0, 2, (4, 8 * 7 * 5 * 2)) # here is 4 is env * agents, 2 is frame stacking along 1d.  
-
-
+# class ModifiedMaskedPPO(MaskablePPO):
 
 
         

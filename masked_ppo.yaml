@@ -33,27 +33,12 @@ env:
 # (will b handled in trainer)
 policies:
   0:
-    algorithm: ModifiedPPO
+    algorithm: MaskedPPO
     policy: 'MlpPolicy'
     path: /mnt/e/BrainHack-TIL25/results/do_NOT_delete/train_0bf0b/train_0bf0b_00008/novice_ppo_long_binaryenv_varyall_novice_True_run_train_0bf0b_00008_4915200_steps.zip
-
-  1:
-    algorithm: ModifiedPPO
-    policy: 'MlpPolicy'
-    path: /mnt/e/BrainHack-TIL25/results/do_NOT_delete/train_0bf0b/train_0bf0b_00008/novice_ppo_long_binaryenv_varyall_novice_True_run_train_0bf0b_00008_4915200_steps.zip
-
-  2:
-      algorithm: ModifiedPPO
-      policy: 'MlpPolicy'
-      path: /mnt/e/BrainHack-TIL25/results/do_NOT_delete/train_0bf0b/train_0bf0b_00008/novice_ppo_long_binaryenv_varyall_novice_True_run_train_0bf0b_00008_4915200_steps.zip
-
-  3:
-      algorithm: ModifiedPPO
-      policy: 'MlpPolicy'
-      path: /mnt/e/BrainHack-TIL25/results/do_NOT_delete/train_0bf0b/train_0bf0b_00008/novice_ppo_long_binaryenv_varyall_novice_True_run_train_0bf0b_00008_4915200_steps.zip
 
 agent_roles: [0, 1, 2, 3]
-policy_mapping: [0, 1, 2, 3]
+policy_mapping: [0, 0, 0, 0]
 
 train:
   n_steps: 1000
@@ -124,108 +109,6 @@ tune:
   # policy specific
   policies:
     0:
-      learning_rate:
-        type: loguniform
-        min: 1e-5
-        max: 1e-2
-
-      gamma:
-        type: choice
-        choices: [0.90, 0.95, 0.99]
-        # min: 0.90
-        # max: 0.99
-
-      batch_size:
-        type: choice
-        choices: [32, 64]
-
-      n_epochs:
-        type: choice
-        choices: [5, 10]
-
-      vf_coef:
-        type: uniform
-        min: 0.30
-        max: 0.70
-
-      ent_coef:
-        type: loguniform
-        min: 1e-4
-        max: 1e-1
-
-      gae_lambda:
-        type: choice
-        choices: [0.90, 0.95, 0.99]
-
-    1:
-      learning_rate:
-        type: loguniform
-        min: 1e-5
-        max: 1e-2
-
-      gamma:
-        type: choice
-        choices: [0.90, 0.95, 0.99]
-        # min: 0.90
-        # max: 0.99
-
-      batch_size:
-        type: choice
-        choices: [32, 64]
-
-      n_epochs:
-        type: choice
-        choices: [5, 10]
-
-      vf_coef:
-        type: uniform
-        min: 0.30
-        max: 0.70
-
-      ent_coef:
-        type: loguniform
-        min: 1e-4
-        max: 1e-1
-
-      gae_lambda:
-        type: choice
-        choices: [0.90, 0.95, 0.99]
-
-    2:
-      learning_rate:
-        type: loguniform
-        min: 1e-5
-        max: 1e-2
-
-      gamma:
-        type: choice
-        choices: [0.90, 0.95, 0.99]
-        # min: 0.90
-        # max: 0.99
-
-      batch_size:
-        type: choice
-        choices: [32, 64]
-
-      n_epochs:
-        type: choice
-        choices: [5, 10]
-
-      vf_coef:
-        type: uniform
-        min: 0.30
-        max: 0.70
-
-      ent_coef:
-        type: loguniform
-        min: 1e-4
-        max: 1e-1
-
-      gae_lambda:
-        type: choice
-        choices: [0.90, 0.95, 0.99]
-
-    3:
       learning_rate:
         type: loguniform
         min: 1e-5

@@ -126,7 +126,7 @@ class CustomTrainer(tune.Trainable):
         # and override copies of our defaults that were defined in our init.
 
         self.root_dir = base_config.train.root_dir
-        self.experiment_name = base_config.experiment_name
+        self.experiment_name = base_config.train.experiment_name
 
         self._training_config = base_config.train
         self._env_config = base_config.env
@@ -190,8 +190,8 @@ class CustomTrainer(tune.Trainable):
 
         assert len(train_env.observation_space.shape) == 1, 'Assertion failed, your env observation space is not flattened.'
 
-        trial_code = 'test'
         trial_name = self.trial_name
+        trial_code = trial_name[:-6]
 
         self.eval_log_path = f"{self.root_dir}/ppo_logs/{trial_code}/{trial_name}"
         self.simulator = RLRolloutSimulator(
@@ -311,7 +311,7 @@ if __name__ == '__main__':
         print(f"Using config file: {config_path}")
 
     base_config = OmegaConf.load(config_path)
-    experiment_name = base_config.experiment_name
+    experiment_name = base_config.train.experiment_name
 
     tune_config = base_config.tune
 

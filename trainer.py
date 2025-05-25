@@ -20,7 +20,7 @@ from stable_baselines3.common.utils import (configure_logger, obs_as_tensor,
                                             safe_mean)
 from stable_baselines3.common.vec_env import DummyVecEnv
 from pettingzoo import ParallelEnv
-from modifiedppo import ModifiedPPO
+from otherppos import ModifiedPPO
 from stable_baselines3.common.utils import safe_mean
 from einops import rearrange
 from supersuit.vector.markov_vector_wrapper import MarkovVectorEnv

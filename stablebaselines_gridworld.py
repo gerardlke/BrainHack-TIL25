@@ -413,6 +413,9 @@ class normal_env(raw_env):
             # negative of distance differences as reward increment? 
             # self.rewards[agent] += -diff 
             self.rewards[agent] += -distance / 5
+
+            # see if we want to give rewards based on if scout is visible?
+            # print('agent_obs', self.observations[agent])
         
 
         return None
