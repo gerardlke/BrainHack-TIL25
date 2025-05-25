@@ -9,7 +9,7 @@ env:
     num_iters: 100
     eval_mode: False
     frame_stack_size: 4
-    render_mode: 'rgb_array'
+    render_mode:
     collisions: True
     viewcone_only: True
     see_scout_reward: True
@@ -22,7 +22,7 @@ env:
     num_iters: 100
     eval_mode: True
     frame_stack_size: 4
-    render_mode: 'rgb_array'
+    render_mode:
     collisions: True
     viewcone_only: True
     see_scout_reward: True
@@ -52,12 +52,6 @@ policies:
       policy: 'MlpPolicy'
       path: /mnt/e/BrainHack-TIL25/checkpoints/do_NOT_delete/train_0bf0b/train_0bf0b_00008/novice_ppo_long_binaryenv_varyall_novice_True_run_train_0bf0b_00008_4915200_steps.zip
 
-
-  # 1: 
-  #   algorithm: ModifiedPPO
-  #   policy: 'MlpPolicy'
-    # path:
-
 agent_roles: [0, 1, 2, 3]
 policy_mapping: [0, 1, 2, 3]
 
@@ -67,9 +61,10 @@ train:
   # this is to ensure that we have the same number of TOTAL iterations, across
   # all runs. oh but it doesnt account for num of vector envs, we multiply that for
   # you, so if you set this to be 250000, and have 2 vec envs * 4 agents, it will be 250k * 8 = 2mil
-  n_eval_episodes: 10
+  n_eval_episodes: 20
   num_evals: 40
   root_dir: '/mnt/e/BrainHack-TIL25/results'
+  experiment_name: '4_agents'
   no_improvement: 5
   # all callbacks and their configurations here
   callbacks:
@@ -118,25 +113,25 @@ tune:
     choices: [true]
   wall_collision:
     type: choice
-    choices: [-5, 0]
+    choices: [-5, -2, -0.5]
   stationary_penalty:
     type: choice
-    choices: [-5, 0]
+    choices: [-5, -2, -0.5]
   looking:
     type: choice
-    choices: [-0.5, -0.2, 0]
+    choices: [-0.5, -0.1]
   
   # policy specific
   policies:
     0:
       learning_rate:
         type: loguniform
-        min: 1e-3
-        max: 5e-2
+        min: 1e-5
+        max: 1e-2
 
       gamma:
         type: choice
-        choices: [0.90, 0.99]
+        choices: [0.90, 0.95, 0.99]
         # min: 0.90
         # max: 0.99
 
@@ -156,22 +151,21 @@ tune:
       ent_coef:
         type: loguniform
         min: 1e-4
-        max: 1e-2
+        max: 1e-1
 
       gae_lambda:
-        type: uniform
-        min: 0.90
-        max: 0.99
+        type: choice
+        values: [0.90, 0.95, 0.99]
 
     1:
       learning_rate:
         type: loguniform
-        min: 1e-3
-        max: 5e-2
+        min: 1e-5
+        max: 1e-2
 
       gamma:
         type: choice
-        choices: [0.90, 0.99]
+        choices: [0.90, 0.95, 0.99]
         # min: 0.90
         # max: 0.99
 
@@ -191,22 +185,21 @@ tune:
       ent_coef:
         type: loguniform
         min: 1e-4
-        max: 1e-2
+        max: 1e-1
 
       gae_lambda:
-        type: uniform
-        min: 0.90
-        max: 0.99
+        type: choice
+        values: [0.90, 0.95, 0.99]
 
     2:
       learning_rate:
         type: loguniform
-        min: 1e-3
-        max: 5e-2
+        min: 1e-5
+        max: 1e-2
 
       gamma:
         type: choice
-        choices: [0.90, 0.99]
+        choices: [0.90, 0.95, 0.99]
         # min: 0.90
         # max: 0.99
 
@@ -226,22 +219,21 @@ tune:
       ent_coef:
         type: loguniform
         min: 1e-4
-        max: 1e-2
+        max: 1e-1
 
       gae_lambda:
-        type: uniform
-        min: 0.90
-        max: 0.99
+        type: choice
+        values: [0.90, 0.95, 0.99]
 
     3:
       learning_rate:
         type: loguniform
-        min: 1e-3
-        max: 5e-2
+        min: 1e-5
+        max: 1e-2
 
       gamma:
         type: choice
-        choices: [0.90, 0.99]
+        choices: [0.90, 0.95, 0.99]
         # min: 0.90
         # max: 0.99
 
@@ -261,9 +253,8 @@ tune:
       ent_coef:
         type: loguniform
         min: 1e-4
-        max: 1e-2
+        max: 1e-1
 
       gae_lambda:
-        type: uniform
-        min: 0.90
-        max: 0.99
+        type: choice
+        values: [0.90, 0.95, 0.99]

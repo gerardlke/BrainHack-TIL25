@@ -111,9 +111,9 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         # buffer_size, or action_noise. pass those straight to DQN.
 
         self.policies = []
-        _policies_config = deepcopy(policies_config)
+        self._policies_config = deepcopy(policies_config)
         
-        for polid, policy_config in _policies_config.items():
+        for polid, policy_config in self._policies_config.items():
             algo_type = eval(policy_config.algorithm)  # this will fail if the policy specified in the config
             # has not yet been imported. TODO do a registry if we aren't lazy?
             del policy_config.algorithm
@@ -122,16 +122,18 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
                     f'You passed in different n_steps for polid {polid} when you '
             else:
                 policy_config.n_steps = self.n_steps
-            print('POLICY CONFIG OF POLID', polid)
-            print('policy_config:', policy_config)
             if hasattr(policy_config, 'path'):
                 policy = algo_type.load(
                     env = self.dummy_envs[polid],
+                    tensorboard_log=self.tensorboard_log,
+                    verbose=self.verbose,
                     **policy_config
                 )
             else:
                 policy = algo_type(
                     env = self.dummy_envs[polid],
+                    tensorboard_log=self.tensorboard_log,
+                    verbose=self.verbose,
                     **policy_config
                 )
 
@@ -236,6 +238,10 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
                 )
                 if log_interval is not None and policy.num_timesteps % log_interval == 0:
                     fps = int(policy.num_timesteps / (time.time() - policy.start_time))
+                    policy_config = self._policies_config[polid]
+                    [policy.logger.record(
+                        k, v
+                    ) for k, v in policy_config.items()]
                     policy.logger.record("polid", polid, exclude="tensorboard")
                     policy.logger.record(
                         "time/iterations", policy.num_timesteps, exclude="tensorboard"
@@ -362,6 +368,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
             # start = time.time()
             # actually step in the environment
             obs, rewards, dones, infos = self.env.step(step_actions)
+            # print('obs', obs.shape)
 
             # print('policy_agent_indexes', policy_agent_indexes)
             all_curr_obs = self.format_env_returns(obs, policy_agent_indexes=self.policy_agent_indexes, to_tensor=True, device=self.policies[0].device)

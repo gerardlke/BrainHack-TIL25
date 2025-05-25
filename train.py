@@ -126,6 +126,7 @@ class CustomTrainer(tune.Trainable):
         # and override copies of our defaults that were defined in our init.
 
         self.root_dir = base_config.train.root_dir
+        self.experiment_name = base_config.experiment_name
 
         self._training_config = base_config.train
         self._env_config = base_config.env
@@ -170,6 +171,7 @@ class CustomTrainer(tune.Trainable):
         }
         # disable collisions for now and enable false eval for now
         # train_env_config['collisions'] = False
+        print('train_env_config', train_env_config)
         _, train_env = build_env(
             reward_names=CustomRewardNames,
             rewards_dict=REWARDS_DICT,
@@ -190,7 +192,6 @@ class CustomTrainer(tune.Trainable):
 
         trial_code = 'test'
         trial_name = self.trial_name
-        EXPERIMENT_NAME = 'test'
 
         self.eval_log_path = f"{self.root_dir}/ppo_logs/{trial_code}/{trial_name}"
         self.simulator = RLRolloutSimulator(
@@ -204,21 +205,22 @@ class CustomTrainer(tune.Trainable):
             verbose=1,
         )
         self.total_timesteps = training_config.training_iters * train_env.num_envs
-        eval_freq = self.total_timesteps / training_config.num_evals / train_env.num_envs
+        eval_freq = int(self.total_timesteps / training_config.num_evals / train_env.num_envs)
+        print('self.total_timesteps', self.total_timesteps)
         eval_freq = int(max(eval_freq, training_config.n_steps))
-        print('eval_freq', eval_freq)
+        print('eval_freq after max', eval_freq)
         training_config.eval_freq = eval_freq
 
         checkpoint_callbacks = [
             CheckpointCallback(
                 save_freq=eval_freq,
                 save_path=f"{self.root_dir}/checkpoints/{trial_code}/{trial_name}/polid_{policy}",
-                name_prefix=f"{EXPERIMENT_NAME}"
+                name_prefix=f"{self.experiment_name}"
             ) for policy in range(num_policies)
         ]
         no_improvement = StopTrainingOnNoModelImprovement(
-            max_no_improvement_evals=3,
-            min_evals=5,
+            max_no_improvement_evals=training_config.no_improvement,
+            min_evals=int(training_config.num_evals) * 0.25,
             verbose=1
         )
         above_reward = StopTrainingOnRewardThreshold(
@@ -236,7 +238,7 @@ class CustomTrainer(tune.Trainable):
             eval_env=eval_env,                    
             callback_after_eval=no_improvement,
             callback_on_new_best=above_reward,
-            deterministic=True,
+            deterministic=False,
         )
         # progress_bar = ProgressBarCallback()
 
@@ -309,6 +311,7 @@ if __name__ == '__main__':
         print(f"Using config file: {config_path}")
 
     base_config = OmegaConf.load(config_path)
+    experiment_name = base_config.experiment_name
 
     tune_config = base_config.tune
 
@@ -346,23 +349,23 @@ if __name__ == '__main__':
             time_attr="training_iteration",
             metric="all_policy_scores",
             mode="max",
-            perturbation_interval=5,  # every n trials
+            perturbation_interval=10,  # every n trials
             hyperparam_mutations=merged)
     trainable_cls = tune.with_parameters(CustomTrainer, base_config=base_config)
     tuner = tune.Tuner(
         tune.with_resources(trainable_cls, resources={"cpu": 5}),
         tune_config=tune.TuneConfig(
                 scheduler=pbt,
-                num_samples=100,
-                max_concurrent_trials=1,
+                num_samples=1000,
+                max_concurrent_trials=4,
         ),
         run_config=tune.RunConfig(
             name='test',
-            storage_path=f"{base_config.train.root_dir}/ray_results",
+            storage_path=f"{base_config.train.root_dir}/ray_results/{experiment_name}",
             verbose=1,
             stop={"training_iteration": 1},
         )
     )
 
     results = tuner.fit()
-    print('best results', results)
+    print('get best results', results.get_best_results())

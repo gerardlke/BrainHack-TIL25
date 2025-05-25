@@ -130,7 +130,15 @@ class normal_env(raw_env):
     Base, standard training env. We disable different agent selection  as we would like to fix the indexes of
     the scout and guards, so that we can 
     """
-    def __init__(self, reward_names, rewards_dict, num_iters=1000, eval=False, collisions=True, **kwargs):
+    def __init__(self,
+            reward_names,
+            rewards_dict,
+            num_iters=1000,
+            eval=False, 
+            collisions=True,
+            viewcone_only=False,
+            see_scout_reward=True,
+        **kwargs):
         # self.rewards_dict is defined in super init call
         super().__init__(**kwargs)
         self.num_iters = num_iters
@@ -139,6 +147,8 @@ class normal_env(raw_env):
         self.eval = eval
         self.collisions = collisions
         self.prev_distances = {agent: None for agent in self.possible_agents[:]}
+        self.viewcone_only = viewcone_only
+        self.see_scout_reward = see_scout_reward
         # Generate 32 bytes of random data
         random_bytes = os.urandom(32)
         # Hash it with SHA-256, so each env can have its own unique identifier
@@ -262,7 +272,9 @@ class normal_env(raw_env):
                             topright=(x_lim, y_corner + i * 15),
                         )
                 except IndexError as e:
-                    raise e('IndexError: Expected observation was a dictionary with direction and scout keys. If this is raised, you likely have debug mode on whilst only returning a Box observation, not a dictionary.')
+                    raise e('IndexError: Expected observation was a dictionary with direction and scout keys. If this is raised, you likely have debug mode on whilst only returning a Box observation, not a dictionary.' \
+                            f'Debug: Is debug mode on? {self.debug}'
+                            )
 
                 # plot observation
                 for x, y in np.ndindex((self.viewcone_length, self.viewcone_width)):
@@ -498,23 +510,38 @@ class normal_env(raw_env):
 
     @functools.lru_cache(maxsize=None)
     def observation_space(self, agent: AgentID):
-        return Dict(
-            {
-                "viewcone": Box(
-                    0,
-                    2**8 - 1,
-                    shape=(
-                        self.viewcone_length,
-                        self.viewcone_width,
+        if self.viewcone_only:
+            return Dict(
+                {
+                    "viewcone": Box(
+                        0,
+                        2**8 - 1,
+                        shape=(
+                            self.viewcone_length,
+                            self.viewcone_width,
+                        ),
+                        dtype=np.int64,
                     ),
-                    dtype=np.int64,
-                ),
-                "direction": Discrete(len(Direction)),
-                "scout": Discrete(2),
-                "location": Box(0, self.size, shape=(2,), dtype=np.int64),
-                "step": Box(0, self.num_iters + 1, shape=(1,)),
-            }
-        )
+                }
+            )
+        else:
+            return Dict(
+                {
+                    "viewcone": Box(
+                        0,
+                        2**8 - 1,
+                        shape=(
+                            self.viewcone_length,
+                            self.viewcone_width,
+                        ),
+                        dtype=np.int64,
+                    ),
+                    "direction": Discrete(len(Direction)),
+                    "scout": Discrete(2),
+                    "location": Box(0, self.size, shape=(2,), dtype=np.int64),
+                    "step": Box(0, self.num_iters + 1, shape=(1,)),
+                }
+            )
     
     def reset(self, seed=None, options=None):
         """
@@ -579,13 +606,14 @@ class normal_env(raw_env):
                 ))
                 # gsdfSGdFGF
 
-    # def observe(self, agent):
-    #     # run super method, but prune to only return the viewcone observation.
-    #     # this will break rendering for now.
-    #     observations = super().observe(agent)
-    #     # print('obs', observations)
-    #     # print('returning viewcone', observations['viewcone'])
-    #     return observations['viewcone']
+    def observe(self, agent):
+        # run super method, but prune to only return the viewcone observation.
+        # this will break rendering for now.
+        observations = super().observe(agent)
+        if self.viewcone_only:
+            return observations['viewcone']
+
+        return observations
         
 class binary_viewcone_env(normal_env):
     # yoink brainhack code but change some tings
@@ -597,18 +625,34 @@ class binary_viewcone_env(normal_env):
         """
         Binary viewcone. must be flattened since after binarizing, result viewcone will be 3D, which will not support frame stacking.
         """
-        return Dict(
-            {
-                "viewcone": Box(
-                    0,
-                    1,
-                    shape=(
-                        8,  # hardcode lol
-                        self.viewcone_length,
-                        self.viewcone_width,
+        if self.viewcone_only:
+            return Dict(
+                {
+                    "viewcone": Box(
+                        0,
+                        1,
+                        shape=(
+                            8,  # hardcode lol
+                            self.viewcone_length,
+                            self.viewcone_width,
+                        ),
+                        dtype=np.int64,
                     ),
-                    dtype=np.int64,
-                ),
+                }
+            )
+        else:
+            return Dict(
+                {
+                    "viewcone": Box(
+                        0,
+                        1,
+                        shape=(
+                            8,  # hardcode lol
+                            self.viewcone_length,
+                            self.viewcone_width,
+                        ),
+                        dtype=np.int64,
+                    ),
                 "direction": Discrete(len(Direction)),
                 "scout": Discrete(2),
                 "location": Box(0, self.size, shape=(2,), dtype=np.int64),
@@ -653,11 +697,16 @@ class binary_viewcone_env(normal_env):
 
         bit_planes = np.unpackbits(view.astype(np.uint8))  # made R C B into (R C B)
 
-        return {
-            "viewcone": bit_planes,
-            "direction": self.agent_directions[agent],
-            "location": self.agent_locations[agent],
-            "scout": 1 if agent == self.scout else 0,
-            "step": self.num_moves,
-        }
-    
+        if not self.viewcone_only:
+            return {
+                "viewcone": bit_planes,
+                "direction": self.agent_directions[agent],
+                "location": self.agent_locations[agent],
+                "scout": 1 if agent == self.scout else 0,
+                "step": self.num_moves,
+            }
+        else:
+            return {
+                "viewcone": bit_planes
+            }
+        
