@@ -44,6 +44,9 @@ from einops import rearrange
 
 from til_environment.gridworld import raw_env
 
+from sb3_contrib.common.envs import InvalidActionEnvDiscrete
+from sb3_contrib.common.wrappers import ActionMasker
+
 
 def build_env(
     num_vec_envs,
@@ -55,6 +58,7 @@ def build_env(
     eval_mode: bool = False,
     novice: bool = True,
     debug: bool = False,
+    action_masking: bool = True,
     frame_stack_size: int = 4,
     **kwargs,
 ):
@@ -109,12 +113,21 @@ def build_env(
     # Provides a wide variety of helpful user errors
     env = wrappers.OrderEnforcingWrapper(env)
     
+    if action_masking:
+        env = ActionMasker(env, mask_fn)
     parallel_env = aec_to_parallel(env)
     frame_stack = ss.frame_stack_v2(parallel_env, stack_size=frame_stack_size, stack_dim=0)
     vec_env = ss.pettingzoo_env_to_vec_env_v1(frame_stack)
     vec_env = ss.concat_vec_envs_v1(vec_env, num_vec_envs=num_vec_envs, num_cpus=4, base_class='stable_baselines3')
 
     return env, vec_env
+
+
+def mask_fn(env: gymnasium.Env) -> np.ndarray:
+    # Do whatever you'd like in this function to return the action mask
+    # for the current env. In this example, we assume the env has a
+    # helpful method we can rely on.
+    return env.valid_action_mask()
 
 """
 TODO: things to try for our environments:
@@ -417,8 +430,12 @@ class normal_env(raw_env):
             # see if we want to give rewards based on if scout is visible?
             # print('agent_obs', self.observations[agent])
         
-
         return None
+    
+    def valid_action_mask(self):
+
+        return sgdhftjytreftg
+
     
     def get_info(self, agent: AgentID):
         """
