@@ -34,7 +34,7 @@ env:
 policies:
   0:
     algorithm: MaskablePPO
-    policy: 'MlpPolicy'
+    policy: 'MultiInputPolicy'
     # path: /mnt/e/BrainHack-TIL25/results/do_NOT_delete/train_0bf0b/train_0bf0b_00008/novice_ppo_long_binaryenv_varyall_novice_True_run_train_0bf0b_00008_4915200_steps.zip
 
 agent_roles: [0, 1, 2, 3]

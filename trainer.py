@@ -31,7 +31,7 @@ from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import obs_as_tensor
 
-from sb3_contrib.
+from sb3_contrib.ppo_mask import MaskablePPO
 
 class DummyGymEnv(gymnasium.Env):
     def __init__(self, observation_space, action_space):
@@ -95,8 +95,6 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         self.n_steps = n_steps  # we forcibly standardize this across all agents, because if one collects fewer n_steps
         # than the other, that would be kinda wack
 
-        assert len(self.env.observation_space.shape) == 1, 'Assertion failed. We only support training environments' \
-            'where everything is flattened, just to standardize things.'
         # observation_space is flattened per agent, then concatenated across all agent.
         # this means that if the original flattened dict space is 36
 
@@ -494,16 +492,21 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         else:
             mutate_func = lambda x: x  # noqa: E731
             kwargs = {}
-
         # 1. appropriate indexing
         if isinstance(env_returns, dict):
+            print('env_returns shapes', 
+                  {
+                      k: v.shape for k, v in env_returns.items()
+                  }
+                  )
             to_policies = [
                     {k: mutate_func(np.take(v, policy_agent_indexes[polid], axis=0), **kwargs) 
                         for k, v in env_returns.items()}
                 for polid in range(num_policies)
             ]
         elif isinstance(env_returns, np.ndarray):
-            # print('env_returns', env_returns)
+            print('env_returns', env_returns)
+            print('env_returns shape', env_returns.shape)
             # print('role indexes[polid]', [
             #     np.take(env_returns, policy_agent_indexes[polid], axis=0) for polid in range(num_policies)
             # ])

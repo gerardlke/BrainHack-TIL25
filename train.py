@@ -184,12 +184,12 @@ class CustomTrainer(tune.Trainable):
             rewards_dict=STD_REWARDS_DICT,
             **eval_env_config
         )
+        print('UNWRAPPED??????', train_env.unwrapped)
+        print('UNWRAPPED??????', train_env.unwrapped.compute_mask)
+        print('UNWRAPPED??????', train_env.unwrapped.compute_mask('hi'))
 
         self.agent_roles = list(base_config.agent_roles)
         self.policy_mapping = list(base_config.policy_mapping)
-
-        assert len(train_env.observation_space.shape) == 1, 'Assertion failed, your env observation space is not flattened.'
-
         trial_name = self.trial_name
         trial_code = trial_name[:-6]
 
@@ -229,7 +229,7 @@ class CustomTrainer(tune.Trainable):
         )
         eval_callback = CustomEvalCallback(
             evaluate_policy='mp',
-            in_bits=True if eval_env_config.env_type == 'binary' else False,  # TODO this is really bad code
+            in_bits=True if eval_env_config.binary == 'binary' else False,  # TODO this is really bad code
             log_path=self.eval_log_path,
             agent_roles=self.agent_roles,
             policy_mapping=self.policy_mapping,
@@ -240,9 +240,7 @@ class CustomTrainer(tune.Trainable):
             callback_on_new_best=above_reward,
             deterministic=False,
         )
-        # progress_bar = ProgressBarCallback()
 
-        # Combine callbacks
         self.callbacks = checkpoint_callbacks
         self.eval_callback = eval_callback
         

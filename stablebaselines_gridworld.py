@@ -1,19 +1,20 @@
 """
-Yoink from gridworld.py, but inherit gynasium.Env to integrate with ray rllib
+Yoink from gridworld.py, but mutates with a whole host of additional functionalities
 """
 import supersuit as ss
 import functools
 import logging
 import warnings
-from functools import partial
 import os
 import hashlib
 import cv2
 import time
-from pettingzoo.utils.conversions import aec_to_parallel
 import gymnasium
 import numpy as np
 import pygame
+
+from functools import partial
+from pettingzoo.utils.conversions import aec_to_parallel
 from collections import defaultdict
 from gymnasium.spaces import Box, Dict, Discrete
 from gymnasium.utils.seeding import np_random
@@ -42,10 +43,14 @@ from til_environment.helpers import (
 from til_environment.types import Action, Direction, Player, RewardNames, Tile, Wall
 from einops import rearrange
 
+from supersuit.utils.frame_stack import stack_init, stack_obs, stack_obs_space
 from til_environment.gridworld import raw_env
 
 from sb3_contrib.common.envs import InvalidActionEnvDiscrete
 from pettingzoo.utils.wrappers import BaseWrapper
+
+from supersuit.generic_wrappers.utils.base_modifier import BaseModifier
+from supersuit.generic_wrappers.utils.shared_wrapper_util import shared_wrapper
 
 
 def build_env(
@@ -53,7 +58,7 @@ def build_env(
     reward_names,
     rewards_dict,
     binary,
-    action_masking,
+    action_masking=True,
     env_wrappers: list[BaseWrapper] | None = None,
     render_mode: str | None = None,
     eval_mode: bool = False,
@@ -94,8 +99,8 @@ def build_env(
         binary=binary,
         **kwargs
     )
-    if action_masking:
-        env = ActionMaskWrapper(env)
+    # if action_masking:
+    #     env = ActionMaskWrapper(env)
     if env_wrappers is None:
         env_wrappers = [
             FlattenDictWrapper,
@@ -112,10 +117,11 @@ def build_env(
     
     parallel_env = aec_to_parallel(env)
     frame_stack = ss.frame_stack_v2(parallel_env, stack_size=frame_stack_size, stack_dim=0)
-    vec_env = ss.pettingzoo_env_to_vec_env_v1(frame_stack)
-    vec_env = ss.concat_vec_envs_v1(vec_env, num_vec_envs=num_vec_envs, num_cpus=4, base_class='stable_baselines3')
+    # vec_env = ss.pettingzoo_env_to_vec_env_v1(frame_stack)
+    # vec_env = ss.concat_vec_envs_v1(vec_env, num_vec_envs=num_vec_envs, num_cpus=4, base_class='stable_baselines3')
 
-    return env, vec_env
+    # return env, vec_env
+    return env, frame_stack
 
 
 """
@@ -125,48 +131,21 @@ TODO: things to try for our environments:
 3. See if you can exploit distance from scout into some latent state of the model (recurrentPPO?)
 """
 
-class ActionMaskWrapper(BaseWrapper):
-    """
-    Env Wrapper to do action masking, hardcoded to our return type
-    Because we usually flattendict on observation outputs, action spaces will be flattened with them too.
-    This is problematic, but we'll find some way to pass the action_mask boolean state to downstream components.
-
-    Anyways wrap this before flatten dict wrapper so nothing implodes
-    """
-    def observe(self, agent):
-        obs = self.env.observe(agent)
-        # Compute mask for current agent based on env state
-        action_mask = self.compute_mask(agent)
-
-        if isinstance(obs, dict):
-            return obs.update({'action_mask': action_mask})
-        else:
-            return {
-                "observation": obs,
-                "action_mask": action_mask
-            }
-
-    def compute_mask(self, agent):
-        # Define custom logic here
-        # For example, disallow some actions based on internal state
-        mask = np.ones(self.env.action_space(agent).n, dtype=np.int8)
-        # e.g., disable action 2:
-        mask[2] = 0
-        return mask
-
 
 class modified_env(raw_env):
     """
     yoink provided env and add some stuff to it
 
-    Base, standard training env. We disable different agent selection  as we would like to fix the indexes of
-    the scout and guards, so that we can 
+    Base, standard training env. We disable different agent selection as we would like to fix the indexes of
+    the scout and guards, so that we can more easily extract it and parse it into seperate policies.
+
+    Also supports action masking, just does not return it in observation space.
     """
     def __init__(self,
             reward_names,
             rewards_dict,
             binary,
-            action_masking,
+            action_masking=True,
             num_iters=1000,
             eval=False, 
             collisions=True,
@@ -177,6 +156,10 @@ class modified_env(raw_env):
         super().__init__(**kwargs)
         self.binary = binary
         self.action_masking = action_masking
+        if self.action_masking:
+            print('-----------------------------------------')
+            print('---------ACTION MASKING ENABLED----------')
+            print('-----------------------------------------')
         self.num_iters = num_iters
         self.reward_names = reward_names
         self.rewards_dict = rewards_dict
@@ -455,9 +438,13 @@ class modified_env(raw_env):
         
         return None
     
-    def valid_action_mask(self):
-
-        return sgdhftjytreftg
+    def compute_mask(self, agent):
+        # Define custom logic here
+        # For example, disallow some actions based on internal state
+        mask = np.ones(self.env.action_space(agent).n, dtype=np.int8)
+        # e.g., disable action 2:
+        mask[2] = 0
+        return mask
 
     
     def get_info(self, agent: AgentID):
@@ -554,11 +541,9 @@ class modified_env(raw_env):
     @functools.lru_cache(maxsize=None)
     def observation_space(self, agent: AgentID):
         # TODO: tidy ts up nga
+        all_obs_spaces = {}
         if self.binary:
-            if self.viewcone_only:
-                return Dict(
-                    {
-                        "viewcone": Box(
+            all_obs_spaces["viewcone"] = Box(
                             0,
                             1,
                             shape=(
@@ -567,47 +552,9 @@ class modified_env(raw_env):
                                 self.viewcone_width,
                             ),
                             dtype=np.int64,
-                        ),
-                    }
-                )
-            else:
-                return Dict(
-                    {
-                        "viewcone": Box(
-                            0,
-                            1,
-                            shape=(
-                                8,  # hardcode lol
-                                self.viewcone_length,
-                                self.viewcone_width,
-                            ),
-                            dtype=np.int64,
-                        ),
-                    "direction": Discrete(len(Direction)),
-                    "scout": Discrete(2),
-                    "location": Box(0, self.size, shape=(2,), dtype=np.int64),
-                    "step": Box(0, self.num_iters + 1, shape=(1,)),
-                }
-            )
-            
-        if self.viewcone_only:
-            return Dict(
-                {
-                    "viewcone": Box(
-                        0,
-                        2**8 - 1,
-                        shape=(
-                            self.viewcone_length,
-                            self.viewcone_width,
-                        ),
-                        dtype=np.int64,
-                    ),
-                }
-            )
+                        )
         else:
-            return Dict(
-                {
-                    "viewcone": Box(
+            all_obs_spaces["viewcone"] = Box(
                         0,
                         2**8 - 1,
                         shape=(
@@ -615,14 +562,21 @@ class modified_env(raw_env):
                             self.viewcone_width,
                         ),
                         dtype=np.int64,
-                    ),
-                    "direction": Discrete(len(Direction)),
-                    "scout": Discrete(2),
-                    "location": Box(0, self.size, shape=(2,), dtype=np.int64),
-                    "step": Box(0, self.num_iters + 1, shape=(1,)),
-                }
-            )
-    
+                    )
+            
+        if not self.viewcone_only:
+            all_obs_spaces["direction"] = Discrete(len(Direction))
+            all_obs_spaces["scout"] = Discrete(2)
+            all_obs_spaces["location"] = Box(0, self.size, shape=(2,), dtype=np.int64)
+            all_obs_spaces["step"] = Box(0, self.num_iters + 1, shape=(1,))
+
+        # if self.action_masking:
+        #     all_obs_spaces["action_mask"] = Box(0, 1, shape=(len(Action), ), dtype=np.int64)
+
+        return Dict(
+            **all_obs_spaces
+        )
+
     def reset(self, seed=None, options=None):
         """
         Resets the environment. MUST be called before training to set up the environment.
@@ -687,7 +641,6 @@ class modified_env(raw_env):
                 # gsdfSGdFGF
 
     def observe(self, agent):
-        def observe(self, agent):
         """
         Returns the observation of the specified agent.
         """
@@ -722,10 +675,13 @@ class modified_env(raw_env):
                     else np.uint8(Player.GUARD.power)
                 )
 
-        bit_planes = np.unpackbits(view.astype(np.uint8))  # made R C B into (R C B)
+        if self.binary:
+            view = np.unpackbits(view.astype(np.uint8))  # made R C B into (R C B)
         
         if self.viewcone_only:
-            return view
+            return {
+                "viewcone": view,
+                }
 
         return {
             "viewcone": view,
@@ -734,3 +690,62 @@ class modified_env(raw_env):
             "scout": 1 if agent == self.scout else 0,
             "step": self.num_moves,
         }
+
+# depreciated code for now.
+# def frame_stack_v3(env, stack_size=4, stack_dim=-1):
+#     """
+#     Lmao why dont they support dict (stacking along each key)
+#     Meh f-it we ball ourselves lol
+
+#     All we need to do is, for each key in dictionary, stack the observation space along that key
+#     """
+#     assert isinstance(stack_size, int), "stack size of frame_stack must be an int"
+
+#     class FrameStackModifier(BaseModifier):
+#         def modify_obs_space(self, obs_space):
+#             print('OBS_SPACE IN FRAME STACK MODIFIER', obs_space)
+#             self.old_obs_space = obs_space
+#             tmp_obs_space = {}
+#             if isinstance(obs_space, Dict):
+#                 for k, o_space in obs_space.items():
+#                     if isinstance(o_space, Box):
+#                         assert (
+#                             1 <= len(o_space.shape) <= 3
+#                         ), "frame_stack only works for 1, 2 or 3 dimensional observations"
+#                     elif isinstance(o_space, Discrete):
+#                         pass
+#                     else:
+#                         assert (
+#                             False
+#                         ), "Stacking is currently only allowed for Box and Discrete observation spaces. The given observation space is {}".format(
+#                             obs_space
+#                         )
+#                     tmp_obs_space[k] = stack_obs_space(o_space, stack_size, stack_dim)
+
+#             self.observation_space = Dict(
+#                 **tmp_obs_space
+#             )
+#             print('self.new obs space', self.observation_space)
+#             return self.observation_space
+
+#         def reset(self, seed=None, options=None):
+#             tmp_stack = {}
+#             for k, o_space in self.old_obs_space.items():
+#                 tmp_stack[k] = stack_init(o_space, stack_size, stack_dim)
+
+#             self.stack = tmp_stack
+#             print('self.stack', self.stack)
+
+#         def modify_obs(self, obs):
+#             for k, stack in self.stack.items():
+#                 self.stack[k] = stack_obs(
+#                     stack, obs, self.old_obs_space[k], stack_size, stack_dim
+#                 )
+
+#             return self.stack
+
+#         def get_last_obs(self):
+#             return self.stack
+
+#     return shared_wrapper(env, FrameStackModifier)
+
