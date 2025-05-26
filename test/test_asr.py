@@ -17,7 +17,7 @@ load_dotenv()
 TEAM_NAME = os.getenv("TEAM_NAME")
 TEAM_TRACK = os.getenv("TEAM_TRACK")
 
-BATCH_SIZE = 4
+BATCH_SIZE = 1
 
 
 wer_transforms = jiwer.Compose([
@@ -61,10 +61,12 @@ def main():
     batch_generator = itertools.batched(sample_generator(instances, data_dir), n=BATCH_SIZE)
     
     results = []
-    for batch in tqdm(batch_generator, total=math.ceil(len(instances) / BATCH_SIZE)):
+    for idx, batch in enumerate(tqdm(batch_generator, total=math.ceil(len(instances) / BATCH_SIZE))):
         response = requests.post("http://localhost:5001/asr", data=json.dumps({
             "instances": batch,
         }))
+        print('prediction:', response.json()["predictions"])
+        print('ground truth:', instances[idx]['transcript'])
         results.extend(response.json()["predictions"])
 
     results_path = results_dir / "asr_results.json"

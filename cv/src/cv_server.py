@@ -9,7 +9,7 @@ from typing import Any
 
 from fastapi import FastAPI, Request
 
-from .cv_manager import CVManager
+from cv_manager import CVManager
 
 
 app = FastAPI()
@@ -32,20 +32,24 @@ async def cv(request: Request) -> dict[str, list[list[dict[str, Any]]]]:
 
     inputs_json = await request.json()
 
-    predictions = []
+    all_predictions = []
     for instance in inputs_json["instances"]:
 
         # Reads the base-64 encoded image and decodes it into bytes.
         image_bytes = base64.b64decode(instance["b64"])
-
+        
         # Performs object detection and appends the result.
-        detections = manager.cv(image_bytes)
-        predictions.append(detections)
-
-    return {"predictions": predictions}
+        predictions = manager.cv(image_bytes)
+        
+        all_predictions.append(predictions)
+        
+    return {'predictions': all_predictions}
 
 
 @app.get("/health")
 def health() -> dict[str, str]:
     """Health check endpoint for your model."""
     return {"message": "health ok"}
+
+
+# uvicorn cv_server:app --port 5002 --host 0.0.0.0  --reload

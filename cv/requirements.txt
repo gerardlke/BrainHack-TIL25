@@ -2,3 +2,12 @@
 
 fastapi==0.115.12
 uvicorn[standard]==0.34.2
+opencv-python==4.7.0.72  # OpenCV for image processing
+numpy==1.24.0  # Numpy for handling array data
+Pillow==9.5.0  # Pillow for image handling
+tqdm==4.65.0  # Progress bar for processing
+pyyaml==6.0  # For handling YAML files (useful for data.yaml)
+
+torch<2.6
+torchvision
+ultralytics

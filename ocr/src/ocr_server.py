@@ -38,6 +38,7 @@ async def ocr(request: Request) -> dict[str, list[str]]:
         text = manager.ocr(image_bytes)
         predictions.append(text)
 
+
     return {"predictions": predictions}
 
 

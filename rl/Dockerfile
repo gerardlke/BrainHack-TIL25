@@ -13,11 +13,22 @@ WORKDIR /workspace
 
 # Installs your dependencies.
 RUN pip install -U pip
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY rl_torch_requirements.txt .
+RUN pip install --no-cache-dir -r rl_torch_requirements.txt
 
 # Copies your source files.
 COPY src .
+COPY model_folder /workspace/model_folder
 
 # Starts your model server.
 CMD uvicorn rl_server:app --port 5004 --host 0.0.0.0
+
+# til submit runs docker tag, docker push, and gcloud ai models upload
+
+# tag:
+# asia-southeast1-docker.pkg.dev/til-ai-2025/mcdonalds-workers-repo-til-25/rl:0.0.1
+
+# docker push
+
+# gcloud ai models upload
+# gcloud ai models upload --region

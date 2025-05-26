@@ -1,0 +1,25 @@
+path: /home/jupyter/BrainHack-TIL25/cvaugmented
+
+train: images/train
+val: images/val
+
+nc: 18
+names:
+  0: cargo aircraft
+  1: commercial aircraft
+  2: drone
+  3: fighter jet
+  4: fighter plane
+  5: helicopter
+  6: light aircraft
+  7: missile
+  8: truck
+  9: car
+  10: tank
+  11: bus
+  12: van
+  13: cargo ship
+  14: yacht
+  15: cruise ship
+  16: warship
+  17: sailboat

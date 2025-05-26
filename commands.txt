@@ -1,11 +1,19 @@
 [Building and running your docker images]
-docker built -t mcdonalds_workers-<YOUR CHALLENGE>:latest .
+docker build -t mcdonalds_workers-<YOUR CHALLENGE>:latest .
+- ASR: docker build -t mcdonalds_workers-asr:latest .
 
 (Note: using -v to mount so u can just edit ur scripts in src without rebuilding the docker image every time)
 docker run -v /home/jupyter/mcdonalds-workers/BrainHack-TIL25/<YOUR CHALLENGE>/src:/workspace -p <YOUR PORT>:<YOUR PORT> mcdonalds_workers-<YOUR CHALLENGE>:latest
 - ASR: docker run -v /home/jupyter/mcdonalds-workers/BrainHack-TIL25/asr/src:/workspace -p 5001:5001 mcdonalds_workers-asr:latest
 
+[Conda environment]
+conda create --name <ENVIRONMENT NAME> python=3.12
+conda activate <ENVIRONMENT NAME>
+conda info --envs
 
 [Reattach dataset folders]
 mkdir -p ~/mcdonalds-workers && sudo mount ~/mcdonalds-workers
 mkdir -p ~/novice && sudo mount ~/novice
+
+[Nvidia SMI]
+watch -n 1 nvidia-smi

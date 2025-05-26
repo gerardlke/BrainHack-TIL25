@@ -1,0 +1,79 @@
+Using docTR's training pipeline through the docTR repository on GitHub
+## Train Text Recognition/Detection Model 
+                    
+python references/recognition/train_pytorch.py crnn_vgg16_bn \
+  --output_dir /home/jupyter/mcdonalds-workers/BrainHack-TIL25/ocr/src \
+  --train_path /home/jupyter/ocr_dataset/train \
+  --val_path /home/jupyter/ocr_dataset/val \
+  --epochs 15 \
+  --batch_size 16 \
+  --vocab english \
+  --freeze-backbone \
+  --pretrained \
+  --early-stop \
+  --early-stop-epochs 3
+
+
+# Training Arguments ( For PyTorch )
+usage: train_pytorch.py [-h] [--output_dir OUTPUT_DIR] [--train_path TRAIN_PATH] [--val_path VAL_PATH] [--train-samples TRAIN_SAMPLES] [--val-samples VAL_SAMPLES]
+                        [--train_datasets {CORD,FUNSD,IC03,IIIT5K,SVHN,SVT,SynthText} [{CORD,FUNSD,IC03,IIIT5K,SVHN,SVT,SynthText} ...]]
+                        [--val_datasets {CORD,FUNSD,IC03,IIIT5K,SVHN,SVT,SynthText} [{CORD,FUNSD,IC03,IIIT5K,SVHN,SVT,SynthText} ...]] [--font FONT] [--min-chars MIN_CHARS] 
+                        [--max-chars MAX_CHARS]
+                        [--name NAME] [--epochs EPOCHS] [-b BATCH_SIZE] [--device DEVICE] [--input_size INPUT_SIZE] [--lr LR] [--wd WEIGHT_DECAY] [-j WORKERS] [--resume RESUME]
+                        [--vocab VOCAB] [--test-only]
+                        [--freeze-backbone] [--show-samples] [--wb] [--clearml] [--push-to-hub] [--pretrained] [--optim {adam,adamw}] [--sched {cosine,onecycle,poly}] [--amp] 
+                        [--find-lr] [--early-stop]
+                        [--early-stop-epochs EARLY_STOP_EPOCHS] [--early-stop-delta EARLY_STOP_DELTA]
+                        arch
+                    
+options:
+  -h, --help            show this help message and exit
+  --output_dir OUTPUT_DIR
+                        path to save checkpoints and final model (default: .)
+  --train_path TRAIN_PATH
+                        path to train data folder(s) (default: None)
+  --val_path VAL_PATH   path to val data folder (default: None)
+  --train-samples TRAIN_SAMPLES
+                        Multiplied by the vocab length gets you the number of synthetic training samples that will be used. (default: 1000)
+  --val-samples VAL_SAMPLES
+                        Multiplied by the vocab length gets you the number of synthetic validation samples that will be used. (default: 20)
+  --train_datasets {CORD,FUNSD,IC03,IIIT5K,SVHN,SVT,SynthText} [{CORD,FUNSD,IC03,IIIT5K,SVHN,SVT,SynthText} ...]
+                        Built-in datasets to use for training (default: None)
+  --val_datasets {CORD,FUNSD,IC03,IIIT5K,SVHN,SVT,SynthText} [{CORD,FUNSD,IC03,IIIT5K,SVHN,SVT,SynthText} ...]
+                        Built-in datasets to use for validation (default: None)
+  --font FONT           Font family to be used (default: FreeMono.ttf,FreeSans.ttf,FreeSerif.ttf)
+  --min-chars MIN_CHARS
+                        Minimum number of characters per synthetic sample (default: 1)
+  --max-chars MAX_CHARS
+                        Maximum number of characters per synthetic sample (default: 12)
+  --name NAME           Name of your training experiment (default: None)
+  --epochs EPOCHS       number of epochs to train the model on (default: 10)
+  -b BATCH_SIZE, --batch_size BATCH_SIZE
+                        batch size for training (default: 64)
+  --device DEVICE       device (default: None)
+  --input_size INPUT_SIZE
+                        input size H for the model, W = 4*H (default: 32)
+  --lr LR               learning rate for the optimizer (Adam or AdamW) (default: 0.001)
+  --wd WEIGHT_DECAY, --weight-decay WEIGHT_DECAY
+                        weight decay (default: 0)
+  -j WORKERS, --workers WORKERS
+                        number of workers used for dataloading (default: None)
+  --resume RESUME       Path to your checkpoint (default: None)
+  --vocab VOCAB         Vocab to be used for training (default: french)
+  --test-only           Run the validation loop (default: False)
+  --freeze-backbone     freeze model backbone for fine-tuning (default: False)
+  --show-samples        Display unormalized training samples (default: False)
+  --wb                  Log to Weights & Biases (default: False)
+  --clearml             Log to ClearML (default: False)
+  --push-to-hub         Push to Huggingface Hub (default: False)
+  --pretrained          Load pretrained parameters before starting the training (default: False)
+  --optim {adam,adamw}  optimizer to use (default: adam)
+  --sched {cosine,onecycle,poly}
+                        scheduler to use (default: cosine)
+  --amp                 Use Automatic Mixed Precision (default: False)
+  --find-lr             Gridsearch the optimal LR (default: False)
+  --early-stop          Enable early stopping (default: False)
+  --early-stop-epochs EARLY_STOP_EPOCHS
+                        Patience for early stopping (default: 5)
+  --early-stop-delta EARLY_STOP_DELTA
+                        Minimum Delta for early stopping (default: 0.01)

@@ -78,7 +78,7 @@ def main():
         with open(data_dir / instance["contents"], "r") as file:
             document_contents = file.read().strip()
         ground_truths.append(document_contents)
-
+    
     score = score_ocr(results, ground_truths)
     print("1 - CER:", score)
 

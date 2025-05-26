@@ -1,0 +1,38 @@
+# Dependencies for RL.
+gymnasium
+fastapi
+uvicorn[standard]
+opencv-python
+einops
+ray
+ray[tune]
+ray[default]
+ray[dashboard]
+dm_tree
+scipy
+torch
+tensorboard
+stable_baselines3
+stable_baselines3[extra]
+sb3-contrib
+
+fastapi
+jiwer
+python-dotenv
+requests
+tqdm
+pycocotools
+uvicorn[standard]
+pandas
+
+# This is the til_environment package. You'll need this to train and test your
+# RL model. You can import this package using `import til_environment`.
+# -e ./til-25-environment
+
+# TODO: also have to do the following: 
+# pip uninstall tree
+# pip uninstall dm-tree
+# pip install --upgrade ray
+# pip install dm-tree
+
+# pip install --upgrade tensorflow-probability

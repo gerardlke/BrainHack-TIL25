@@ -51,9 +51,13 @@ def sample_generator(
 def score_cv(preds: Sequence[Mapping[str, Any]], ground_truth: Any) -> float:
     if not preds:
         return 0.
-    
+
     ground_truth = COCOPatched(ground_truth)
     results = ground_truth.loadRes(preds)
+    print('gt')
+    print(ground_truth)
+    print('results')
+    print(results)
     coco_eval = COCOeval(ground_truth, results, "bbox")
     coco_eval.evaluate()
     coco_eval.accumulate()
@@ -62,14 +66,13 @@ def score_cv(preds: Sequence[Mapping[str, Any]], ground_truth: Any) -> float:
 
 
 def main():
-    data_dir = Path(f"/home/jupyter/{TEAM_TRACK}/cv")
-    results_dir = Path(f"/home/jupyter/{TEAM_NAME}")
+    data_dir = Path(f"/home/jupyter/novice/cv/")
+    results_dir = Path(f"/home/jupyter/results")
     results_dir.mkdir(parents=True, exist_ok=True)
 
     with open(data_dir / "annotations.json", "r") as f:
         annotations = json.load(f)
     instances = annotations["images"]
-
     batch_generator = itertools.batched(sample_generator(instances, data_dir), n=BATCH_SIZE)
 
     results = []

@@ -3,7 +3,6 @@
 # Unless you want to do something special with the server, you shouldn't need
 # to change anything in this file.
 
-
 import base64
 from fastapi import FastAPI, Request
 from asr_manager import ASRManager
@@ -36,6 +35,7 @@ async def asr(request: Request) -> dict[str, list[str]]:
 
         # Performs ASR and appends the result.
         transcription = manager.asr(audio_bytes)
+        
         predictions.append(transcription)
 
     return {"predictions": predictions}

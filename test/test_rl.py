@@ -9,13 +9,13 @@ load_dotenv()
 TEAM_NAME = os.getenv("TEAM_NAME")
 TEAM_TRACK = os.getenv("TEAM_TRACK")
 
-NUM_ROUNDS = 8
+NUM_ROUNDS = 1000
 
 
 def main(novice: bool):
     env = gridworld.env(env_wrappers=[], render_mode=None, novice=novice)
     # be the agent at index 0
-    _agent = env.possible_agents[0]
+    _agent = env.possible_agents[2]
     rewards = {agent: 0 for agent in env.possible_agents}
 
     for _ in range(NUM_ROUNDS):
@@ -47,9 +47,11 @@ def main(novice: bool):
                 action = env.action_space(agent).sample()
             env.step(action)
     env.close()
-    print(f"total rewards: {rewards[_agent]}")
+    print('agent?', agent)
+    print('rewards for all', rewards)
+    print(f"total rewards for agent: {rewards[_agent]}")
     print(f"score: {rewards[_agent] / NUM_ROUNDS / 100}")
 
 
 if __name__ == "__main__":
-    main(TEAM_TRACK == "novice")
+    main(novice=True)
