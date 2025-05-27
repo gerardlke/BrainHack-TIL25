@@ -58,6 +58,7 @@ def build_env(
     reward_names,
     rewards_dict,
     binary,
+    use_action_masking=True,
     env_wrappers: list[BaseWrapper] | None = None,
     render_mode: str | None = None,
     eval_mode: bool = False,
@@ -86,7 +87,6 @@ def build_env(
         - frame_stack_size: how many past frames to stack, mutates the observation space
         **kwargs: other kwargs to pass to the environment class
     """
-
     env = modified_env(
         render_mode=render_mode,
         reward_names=reward_names,
@@ -94,28 +94,38 @@ def build_env(
         eval=eval_mode,
         novice=novice,
         debug=debug,
+        use_action_masking=use_action_masking,
         binary=binary,
         **kwargs
     )
-    # if env_wrappers is None:
-    #     env_wrappers = [
-    #         FlattenDictWrapper,
-    #     ]
-    #     print('YES USING FLATTENDICTWRAPPER')
-    # else:
-    #     raise AssertionError('not using flatten dict, this behaviour is unexpected')
-    # for wrapper in env_wrappers:
-    #     env = wrapper(env)  # type: ignore
+    # if use_action_masking:
+    #     env = ActionMaskWrapper(env)
+    if env_wrappers is None:
+        env_wrappers = [
+            FlattenDictWrapper,
+        ]
+        print('YES USING FLATTENDICTWRAPPER')
+    else:
+        raise AssertionError('not using flatten dict, this behaviour is unexpected')
+    for wrapper in env_wrappers:
+        env = wrapper(env)  # type: ignore
     # this wrapper helps error handling for discrete action spaces
     env = wrappers.AssertOutOfBoundsWrapper(env)
     # Provides a wide variety of helpful user errors
     env = wrappers.OrderEnforcingWrapper(env)
     
     parallel_env = aec_to_parallel(env)
-    frame_stack = frame_stack_v3(parallel_env, stack_size=frame_stack_size, stack_dim=0)
-    vec_env = ss.pettingzoo_env_to_vec_env_v1(frame_stack)
-    vec_env = ss.concat_vec_envs_v1(vec_env, num_vec_envs=num_vec_envs, num_cpus=4, base_class='stable_baselines3')
+    parallel_env = ss.frame_stack_v2(parallel_env, stack_size=frame_stack_size, stack_dim=0)
+    if use_action_masking:
+        assert num_vec_envs == 1, 'Assertion failed. Due to the particular way of calling environment custom '\
+            'functions when masking actions, we disable vectorized environments for action masking. '\
+                'You may still compensate for this by parallelizing across multiple trials with different '\
+                    'hyperparameters.'
+        return env, parallel_env
 
+    vec_env = ss.pettingzoo_env_to_vec_env_v1(parallel_env)
+    vec_env = ss.concat_vec_envs_v1(vec_env, num_vec_envs=num_vec_envs, num_cpus=4, base_class='stable_baselines3')
+    # return env, vec_env
     return env, vec_env
 
 
@@ -134,13 +144,13 @@ class modified_env(raw_env):
     Base, standard training env. We disable different agent selection as we would like to fix the indexes of
     the scout and guards, so that we can more easily extract it and parse it into seperate policies.
 
-    Also, action masking is not conducted here, due to multiple wrappings of vector envs
-    paralzying us and rendering us unable to call this function here. It will lie within the simulator instead.
+    Also supports action masking, just does not return it in observation space.
     """
     def __init__(self,
             reward_names,
             rewards_dict,
             binary,
+            use_action_masking=True,
             num_iters=1000,
             eval=False, 
             collisions=True,
@@ -150,6 +160,11 @@ class modified_env(raw_env):
         # self.rewards_dict is defined in super init call
         super().__init__(**kwargs)
         self.binary = binary
+        self.use_action_masking = use_action_masking
+        if self.use_action_masking:
+            print('-----------------------------------------')
+            print('---------ACTION MASKING ENABLED----------')
+            print('-----------------------------------------')
         self.num_iters = num_iters
         self.reward_names = reward_names
         self.rewards_dict = rewards_dict
@@ -429,9 +444,31 @@ class modified_env(raw_env):
         return None
     
     def compute_mask(self, agent):
+        """
+        We take the concept of looking left or right as an effective 'step left or right', since that would be the next most efficient
+        move for the agent looking left or right. (if it were going backwards, may as well look the other direction and step forward)
+        0. For all agents
+            - If there is a wall in front or behind you, disable the corresponding action.
+            - If there is a wall beside you, disable looking left/right correspondingly.
+            - If there are no other valid actions, enable 'do-nothing'. Else, do-nothing is default disabled.
+
+
+        Possible action masks, if we decide that they need more support, else we would rather refuse to hardcode these behaviours
+        and let them and other strategies emerge naturally.
+        1. Scout
+            - If guard is 1-2 blocks in front or behind you, only can move back / forward to imminently escape.
+            - If guard is 1-2 blocks beside you, disable looking left/right correspondingly, so as to imminently escape.
+            - If guard is directly diagonal, disable the corresponding directions (e.g top left, disable forward and right)
+        2. 
+        
+        """
         # Define custom logic here
-        # For example, disallow some actions based on internal state
-        mask = np.ones(self.env.action_space(agent).n, dtype=np.int8)
+        print('agent', agent)
+        # if self.scout == agent:
+
+        # mask = np.ones(self.action_space(agent).n, dtype=np.int8)
+
+
         # e.g., disable action 2:
         mask[2] = 0
         return mask
@@ -533,12 +570,13 @@ class modified_env(raw_env):
         # TODO: tidy ts up nga
         all_obs_spaces = {}
         if self.binary:
-            # flatten, because stacking does not like 3D box.
             all_obs_spaces["viewcone"] = Box(
                             0,
                             1,
                             shape=(
-                                8 * self.viewcone_length * self.viewcone_width,
+                                8,  # hardcode lol
+                                self.viewcone_length,
+                                self.viewcone_width,
                             ),
                             dtype=np.int64,
                         )
@@ -558,6 +596,9 @@ class modified_env(raw_env):
             all_obs_spaces["scout"] = Discrete(2)
             all_obs_spaces["location"] = Box(0, self.size, shape=(2,), dtype=np.int64)
             all_obs_spaces["step"] = Box(0, self.num_iters + 1, shape=(1,))
+
+        # if self.use_action_masking:
+        #     all_obs_spaces["action_mask"] = Box(0, 1, shape=(len(Action), ), dtype=np.int64)
 
         return Dict(
             **all_obs_spaces
@@ -662,16 +703,7 @@ class modified_env(raw_env):
                 )
 
         if self.binary:
-            view = np.unpackbits(view.astype(np.uint8))  # made R C B into (R C B).
-            # because stacking does not accept 3-D box, we flatten it by default.
-            # test = rearrange(view, '(R C B) -> B R C', B=8, R=7, C=5)
-            # curr_tile_walls = test[:4, 2, 2]
-            
-            # # 1. Disable the corresponding action if there is a wall there.
-            # enabled_actions = np.where(curr_tile_walls == 1, 0, 1)
-
-            # # 2. Ascertain 
-
+            view = np.unpackbits(view.astype(np.uint8))  # made R C B into (R C B)
         
         if self.viewcone_only:
             return {
@@ -686,57 +718,61 @@ class modified_env(raw_env):
             "step": self.num_moves,
         }
 
-def frame_stack_v3(env, stack_size=4, stack_dim=-1):
-    """
-    Lmao why dont they support dict (stacking along each key)
-    Meh f-it we ball ourselves lol
+# depreciated code for now.
+# def frame_stack_v3(env, stack_size=4, stack_dim=-1):
+#     """
+#     Lmao why dont they support dict (stacking along each key)
+#     Meh f-it we ball ourselves lol
 
-    All we need to do is, for each key in dictionary, stack the observation space along that key
-    """
-    assert isinstance(stack_size, int), "stack size of frame_stack must be an int"
+#     All we need to do is, for each key in dictionary, stack the observation space along that key
+#     """
+#     assert isinstance(stack_size, int), "stack size of frame_stack must be an int"
 
-    class FrameStackModifier(BaseModifier):
-        def modify_obs_space(self, obs_space):
-            self.old_obs_space = obs_space
-            tmp_obs_space = {}
-            if isinstance(obs_space, Dict):
-                for k, o_space in obs_space.items():
-                    if isinstance(o_space, Box):
-                        assert (
-                            1 <= len(o_space.shape) <= 3
-                        ), "frame_stack only works for 1, 2 or 3 dimensional observations"
-                    elif isinstance(o_space, Discrete):
-                        pass
-                    else:
-                        assert (
-                            False
-                        ), "Stacking is currently only allowed for Box and Discrete observation spaces. The given observation space is {}".format(
-                            obs_space
-                        )
-                    tmp_obs_space[k] = stack_obs_space(o_space, stack_size, stack_dim)
+#     class FrameStackModifier(BaseModifier):
+#         def modify_obs_space(self, obs_space):
+#             print('OBS_SPACE IN FRAME STACK MODIFIER', obs_space)
+#             self.old_obs_space = obs_space
+#             tmp_obs_space = {}
+#             if isinstance(obs_space, Dict):
+#                 for k, o_space in obs_space.items():
+#                     if isinstance(o_space, Box):
+#                         assert (
+#                             1 <= len(o_space.shape) <= 3
+#                         ), "frame_stack only works for 1, 2 or 3 dimensional observations"
+#                     elif isinstance(o_space, Discrete):
+#                         pass
+#                     else:
+#                         assert (
+#                             False
+#                         ), "Stacking is currently only allowed for Box and Discrete observation spaces. The given observation space is {}".format(
+#                             obs_space
+#                         )
+#                     tmp_obs_space[k] = stack_obs_space(o_space, stack_size, stack_dim)
 
-            self.observation_space = Dict(
-                **tmp_obs_space
-            )
-            return self.observation_space
+#             self.observation_space = Dict(
+#                 **tmp_obs_space
+#             )
+#             print('self.new obs space', self.observation_space)
+#             return self.observation_space
 
-        def reset(self, seed=None, options=None):
-            tmp_stack = {}
-            for k, o_space in self.old_obs_space.items():
-                tmp_stack[k] = stack_init(o_space, stack_size, stack_dim)
+#         def reset(self, seed=None, options=None):
+#             tmp_stack = {}
+#             for k, o_space in self.old_obs_space.items():
+#                 tmp_stack[k] = stack_init(o_space, stack_size, stack_dim)
 
-            self.stack = tmp_stack
+#             self.stack = tmp_stack
+#             print('self.stack', self.stack)
 
-        def modify_obs(self, obs):
-            for k, stack in self.stack.items():
-                self.stack[k] = stack_obs(
-                    stack, obs[k], self.old_obs_space[k], stack_size, stack_dim
-                )
+#         def modify_obs(self, obs):
+#             for k, stack in self.stack.items():
+#                 self.stack[k] = stack_obs(
+#                     stack, obs, self.old_obs_space[k], stack_size, stack_dim
+#                 )
 
-            return self.stack
+#             return self.stack
 
-        def get_last_obs(self):
-            return self.stack
+#         def get_last_obs(self):
+#             return self.stack
 
-    return shared_wrapper(env, FrameStackModifier)
+#     return shared_wrapper(env, FrameStackModifier)
 

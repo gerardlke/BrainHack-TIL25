@@ -1,5 +1,6 @@
 from re import L
 import time
+import inspect
 from collections import deque
 from typing import Any, Dict, List, Optional, Type, Union, TypeVar
 from copy import deepcopy
@@ -57,10 +58,12 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         n_steps,
         tensorboard_log,
         verbose,
+        use_action_masking,
     ):
         """
         All that is required is the configuration file.
         From there we will parse it into the appropriate components.
+        Also, action masking is done here instead of in the environment
 
         Init flows as follows:
         -> Initialize training and evaluation environments.
@@ -83,6 +86,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         self.num_vec_envs = self.env.num_envs
         self.policies_config = policies_config
         self.policy_mapping = policy_mapping
+        self.action_masking = use_action_masking
 
         # check if policy_mapping and policy config have the same number of policies
         assert len(policies_config) == len(np.unique(np.array(self.policy_mapping))), f'Assertion failed. Environment suggests that there are {len(np.unique(self.policy_mapping))} ' \
@@ -100,6 +104,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
 
         self.observation_space = self.env.observation_space
         self.action_space = self.env.action_space
+
         self._vec_normalize_env = None
 
         self.tensorboard_log = tensorboard_log
@@ -214,6 +219,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
 
         # self.env returns a dict, where each key is (M * N, ...), M is number of envs, N is number of agents.
         # we determine number of envs based on the output shape (should find a better way to do this)
+
         reset_obs = self.env.reset()
         n_rollout_steps = self.n_steps * self.num_vec_envs
 
@@ -337,12 +343,20 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         while n_steps < n_rollout_steps:
             with torch.no_grad():
                 for polid, policy in enumerate(self.policies):
-                    episode_starts = torch.tensor(policy._last_episode_starts, dtype=torch.float32, device=policy.device)
-                    (
-                        all_actions[polid],
-                        all_values[polid],
-                        all_log_probs[polid],
-                    ) = policy.policy.forward(last_obs[polid])
+                    if 'action_masks' not in inspect.signature(policy.policy.forward).parameters:
+                        (
+                            all_actions[polid],
+                            all_values[polid],
+                            all_log_probs[polid],
+                        ) = policy.policy.forward(last_obs[polid])
+                    else:
+                        action_masks = self.get_action_masks(last_obs[polid])
+                        (
+                            all_actions[polid],
+                            all_values[polid],
+                            all_log_probs[polid],
+                        ) = policy.policy.forward(last_obs[polid], action_masks=action_masks)
+  
                     if hasattr(all_actions[polid], 'cpu'):
                         all_actions[polid] = all_actions[polid].cpu().numpy()
                     clipped_actions = all_actions[polid]
@@ -459,6 +473,32 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         callback.init_callback(self)
         return callback
 
+    def get_action_masks(self, observation):
+        """
+        
+        """
+        viewcone = observation['viewcone']
+        action_masks = np.zeros((viewcone.shape[0], self.action_space.n))
+        test = rearrange(viewcone, 'A (S R C B) -> A S B R C', B=8, R=7, C=5)
+        # print('raw test', test.shape)
+        test = test[:, -1, :, :, :]
+        # print('after -1 test', test.shape)
+        curr_tile_walls = test[:, :4, 2, 2]
+        # print('after -1 curr_tile_walls', curr_tile_walls.shape)
+        
+        # 1. Disable the corresponding action if there is a wall there.
+        enabled_actions = np.where(curr_tile_walls == 1, 0, 1)
+        # do other stuff like masking for scout if need to
+
+        # print('enabled_actions', enabled_actions.shape)
+        action_masks[:, :4] = enabled_actions
+
+        # 0: only enable stationary action if all of them are disabled.
+        null_action_rows = np.all(action_masks == 0, axis=1)
+        action_masks[null_action_rows, -1] = 1
+        
+        return action_masks
+
     @staticmethod
     def format_env_returns(
         env_returns: dict[str, np.ndarray] | np.ndarray | list[dict],
@@ -494,19 +534,12 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
             kwargs = {}
         # 1. appropriate indexing
         if isinstance(env_returns, dict):
-            print('env_returns shapes', 
-                  {
-                      k: v.shape for k, v in env_returns.items()
-                  }
-                  )
             to_policies = [
                     {k: mutate_func(np.take(v, policy_agent_indexes[polid], axis=0), **kwargs) 
                         for k, v in env_returns.items()}
                 for polid in range(num_policies)
             ]
         elif isinstance(env_returns, np.ndarray):
-            print('env_returns', env_returns)
-            print('env_returns shape', env_returns.shape)
             # print('role indexes[polid]', [
             #     np.take(env_returns, policy_agent_indexes[polid], axis=0) for polid in range(num_policies)
             # ])

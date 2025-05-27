@@ -184,9 +184,6 @@ class CustomTrainer(tune.Trainable):
             rewards_dict=STD_REWARDS_DICT,
             **eval_env_config
         )
-        print('UNWRAPPED??????', train_env.unwrapped)
-        print('UNWRAPPED??????', train_env.unwrapped.compute_mask)
-        print('UNWRAPPED??????', train_env.unwrapped.compute_mask('hi'))
 
         self.agent_roles = list(base_config.agent_roles)
         self.policy_mapping = list(base_config.policy_mapping)
@@ -202,6 +199,7 @@ class CustomTrainer(tune.Trainable):
             tensorboard_log=self.eval_log_path,
             callbacks=None,
             n_steps=training_config.n_steps,
+            use_action_masking=training_config.use_action_masking,
             verbose=1,
         )
         self.total_timesteps = training_config.training_iters * train_env.num_envs

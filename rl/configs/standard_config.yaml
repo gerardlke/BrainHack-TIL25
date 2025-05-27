@@ -1,0 +1,269 @@
+# environment configurations here
+# seperate train and eval env
+env:
+  train:
+    # rewards:
+    num_vec_envs: 2
+    env_type: 'binary'
+    novice: True
+    num_iters: 100
+    eval_mode: False
+    frame_stack_size: 4
+    render_mode: 'rgb_array'
+    collisions: True
+    viewcone_only: True
+    see_scout_reward: True
+
+  eval:
+    # rewards:
+    num_vec_envs: 1
+    env_type: 'binary'
+    novice: True
+    num_iters: 100
+    eval_mode: True
+    frame_stack_size: 4
+    render_mode: 'rgb_array'
+    collisions: True
+    viewcone_only: True
+    see_scout_reward: True
+
+
+
+# the actual mapping from agents to policies is independent of policy configurations
+# (will b handled in trainer)
+policies:
+  0:
+    algorithm: ModifiedPPO
+    policy: 'MlpPolicy'
+    path: /mnt/e/BrainHack-TIL25/checkpoints/do_NOT_delete/train_0bf0b/train_0bf0b_00008/novice_ppo_long_binaryenv_varyall_novice_True_run_train_0bf0b_00008_4915200_steps.zip
+
+  1:
+    algorithm: ModifiedPPO
+    policy: 'MlpPolicy'
+    path: /mnt/e/BrainHack-TIL25/checkpoints/do_NOT_delete/train_0bf0b/train_0bf0b_00008/novice_ppo_long_binaryenv_varyall_novice_True_run_train_0bf0b_00008_4915200_steps.zip
+
+  2:
+      algorithm: ModifiedPPO
+      policy: 'MlpPolicy'
+      path: /mnt/e/BrainHack-TIL25/checkpoints/do_NOT_delete/train_0bf0b/train_0bf0b_00008/novice_ppo_long_binaryenv_varyall_novice_True_run_train_0bf0b_00008_4915200_steps.zip
+
+  3:
+      algorithm: ModifiedPPO
+      policy: 'MlpPolicy'
+      path: /mnt/e/BrainHack-TIL25/checkpoints/do_NOT_delete/train_0bf0b/train_0bf0b_00008/novice_ppo_long_binaryenv_varyall_novice_True_run_train_0bf0b_00008_4915200_steps.zip
+
+
+  # 1: 
+  #   algorithm: ModifiedPPO
+  #   policy: 'MlpPolicy'
+    # path:
+
+agent_roles: [0, 1, 2, 3]
+policy_mapping: [0, 1, 2, 3]
+
+train:
+  n_steps: 1000
+  training_iters: 250000  # this already accounts for n steps
+  # this is to ensure that we have the same number of TOTAL iterations, across
+  # all runs. oh but it doesnt account for num of vector envs, we multiply that for
+  # you, so if you set this to be 250000, and have 2 vec envs * 4 agents, it will be 250k * 8 = 2mil
+  n_eval_episodes: 10
+  num_evals: 40
+  root_dir: '/mnt/e/BrainHack-TIL25/results'
+  no_improvement: 5
+  # all callbacks and their configurations here
+  callbacks:
+
+
+  # other training configurations
+
+# for hyperparam tuning.
+# configurations here will override others of the same name in
+# earlier sections, per tuning run.
+# to 
+tune:
+  # independent of policies
+  n_steps:
+    type: choice
+    choices: [512, 2048]
+  num_iters:
+    type: choice
+    choices: [100]
+  guard_captures:
+    type: choice
+    choices: [50, 200, 500]
+  scout_captured:
+    type: choice
+    choices: [-50, -200, -500]
+  scout_recon:
+    type: choice
+    choices: [1, 2]
+  scout_mission:
+    type: choice
+    choices: [5, 10, 20]
+  scout_step_empty_tile:
+    type: choice
+    choices: [-2, -1, 0]
+  frame_stack_size:
+    type: choice
+    choices: [16]
+  novice:
+    type: choice
+    choices: [true]
+  distance_penalty:
+    type: choice
+    choices: [false]
+  see_scout_reward:
+    type: choice
+    choices: [true]
+  wall_collision:
+    type: choice
+    choices: [-5, 0]
+  stationary_penalty:
+    type: choice
+    choices: [-5, 0]
+  looking:
+    type: choice
+    choices: [-0.5, -0.2, 0]
+  
+  # policy specific
+  policies:
+    0:
+      learning_rate:
+        type: loguniform
+        min: 1e-3
+        max: 5e-2
+
+      gamma:
+        type: choice
+        choices: [0.90, 0.99]
+        # min: 0.90
+        # max: 0.99
+
+      batch_size:
+        type: choice
+        choices: [32, 64]
+
+      n_epochs:
+        type: choice
+        choices: [5, 10]
+
+      vf_coef:
+        type: uniform
+        min: 0.30
+        max: 0.70
+
+      ent_coef:
+        type: loguniform
+        min: 1e-4
+        max: 1e-2
+
+      gae_lambda:
+        type: uniform
+        min: 0.90
+        max: 0.99
+
+    1:
+      learning_rate:
+        type: loguniform
+        min: 1e-3
+        max: 5e-2
+
+      gamma:
+        type: choice
+        choices: [0.90, 0.99]
+        # min: 0.90
+        # max: 0.99
+
+      batch_size:
+        type: choice
+        choices: [32, 64]
+
+      n_epochs:
+        type: choice
+        choices: [5, 10]
+
+      vf_coef:
+        type: uniform
+        min: 0.30
+        max: 0.70
+
+      ent_coef:
+        type: loguniform
+        min: 1e-4
+        max: 1e-2
+
+      gae_lambda:
+        type: uniform
+        min: 0.90
+        max: 0.99
+
+    2:
+      learning_rate:
+        type: loguniform
+        min: 1e-3
+        max: 5e-2
+
+      gamma:
+        type: choice
+        choices: [0.90, 0.99]
+        # min: 0.90
+        # max: 0.99
+
+      batch_size:
+        type: choice
+        choices: [32, 64]
+
+      n_epochs:
+        type: choice
+        choices: [5, 10]
+
+      vf_coef:
+        type: uniform
+        min: 0.30
+        max: 0.70
+
+      ent_coef:
+        type: loguniform
+        min: 1e-4
+        max: 1e-2
+
+      gae_lambda:
+        type: uniform
+        min: 0.90
+        max: 0.99
+
+    3:
+      learning_rate:
+        type: loguniform
+        min: 1e-3
+        max: 5e-2
+
+      gamma:
+        type: choice
+        choices: [0.90, 0.99]
+        # min: 0.90
+        # max: 0.99
+
+      batch_size:
+        type: choice
+        choices: [32, 64]
+
+      n_epochs:
+        type: choice
+        choices: [5, 10]
+
+      vf_coef:
+        type: uniform
+        min: 0.30
+        max: 0.70
+
+      ent_coef:
+        type: loguniform
+        min: 1e-4
+        max: 1e-2
+
+      gae_lambda:
+        type: uniform
+        min: 0.90
+        max: 0.99
