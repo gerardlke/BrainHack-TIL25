@@ -554,14 +554,16 @@ class modified_env(raw_env):
                     )
             
         if not self.viewcone_only:
-            all_obs_spaces["direction"] = Discrete(len(Direction))
-            all_obs_spaces["scout"] = Discrete(2)
+            all_obs_spaces["direction"] = Box(0, 1, shape=(len(Direction), ))
+            all_obs_spaces["scout"] = Box(0, 1, shape=(1, ))
             all_obs_spaces["location"] = Box(0, self.size, shape=(2,), dtype=np.int64)
             all_obs_spaces["step"] = Box(0, self.num_iters + 1, shape=(1,))
 
-        return Dict(
+        thing = Dict(
             **all_obs_spaces
         )
+
+        return thing
 
     def reset(self, seed=None, options=None):
         """
@@ -664,27 +666,49 @@ class modified_env(raw_env):
         if self.binary:
             view = np.unpackbits(view.astype(np.uint8))  # made R C B into (R C B).
             # because stacking does not accept 3-D box, we flatten it by default.
-            # test = rearrange(view, '(R C B) -> B R C', B=8, R=7, C=5)
-            # curr_tile_walls = test[:4, 2, 2]
-            
-            # # 1. Disable the corresponding action if there is a wall there.
-            # enabled_actions = np.where(curr_tile_walls == 1, 0, 1)
 
-            # # 2. Ascertain 
-
-        
         if self.viewcone_only:
-            return {
+            to_return =  {
                 "viewcone": view,
                 }
 
-        return {
+        to_return = {
             "viewcone": view,
             "direction": self.agent_directions[agent],
             "location": self.agent_locations[agent],
             "scout": 1 if agent == self.scout else 0,
             "step": self.num_moves,
         }
+
+        to_return = self.alter_obs(to_return)
+
+        return to_return
+    
+    def alter_obs(self, obs):
+        """
+        Utilite function to alter the observations to fit our observation space.
+        This is crucial, since I refuse to alter the base behaviour of observe but want to
+        format it into a model friendly stackable output.
+        """
+        # return integer direction as a one-hot array
+        direction = obs['direction'].item()
+        one_hot_dir = np.zeros(len(Direction))
+        one_hot_dir[direction] = 1
+
+        # return scout integer as a one size array (so stacker doesnt complain)
+        scout = obs['scout'] # 0 or 1.
+        scout = np.array(scout)
+
+        # do the same for step
+        step = obs['step'] # 0 or 1.
+        step = np.array(step)
+
+        obs['direction'] = one_hot_dir
+        obs['scout'] = scout
+        obs['step'] = step
+
+        return obs
+
 
 def frame_stack_v3(env, stack_size=4, stack_dim=-1):
     """
@@ -725,12 +749,21 @@ def frame_stack_v3(env, stack_size=4, stack_dim=-1):
             for k, o_space in self.old_obs_space.items():
                 tmp_stack[k] = stack_init(o_space, stack_size, stack_dim)
 
+
             self.stack = tmp_stack
 
         def modify_obs(self, obs):
             for k, stack in self.stack.items():
+                o = obs[k]
+
+                if not hasattr(obs[k], 'shape'):
+                    # fixed an issue where stack obs explodes if its an integer its trying to stack
+                    # technically this can be fixed in the observe function of the env, but assuming what they pass
+                    # to us are just integers, do this
+                    o = np.array(o)
+
                 self.stack[k] = stack_obs(
-                    stack, obs[k], self.old_obs_space[k], stack_size, stack_dim
+                    stack, o, self.old_obs_space[k], stack_size, stack_dim
                 )
 
             return self.stack

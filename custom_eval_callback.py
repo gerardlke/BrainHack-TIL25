@@ -1,5 +1,6 @@
 import os
 import warnings
+import inspect
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Callable, Optional, Union
 
@@ -167,9 +168,7 @@ class CustomEvalCallback(EventCallback):
 
     def _on_step(self) -> bool:
         continue_training = True
-        # print('self.eval_freq', self.eval_freq)
-        # print('self.n_calls', self.n_calls)
-        # print('self.n_calls mod self.eval_freq', self.n_calls % self.eval_freq)
+
         if self.eval_freq > 0 and self.n_calls % self.eval_freq == 0:
             # Sync training and eval env if there is VecNormalize
             if self.model.get_vec_normalize_env() is not None:
@@ -357,12 +356,24 @@ class CustomEvalCallback(EventCallback):
 
         while (episode_counts < episode_count_targets).any():
             for polid, policy in enumerate(simulator.policies):
-                actions, states = policy.predict(
-                    last_obs[polid],  # type: ignore[arg-type]
-                    state=states,
-                    episode_start=episode_starts,
-                    deterministic=deterministic,
-                )
+                if 'action_masks' not in inspect.signature(policy.predict).parameters:
+                        actions, states = policy.predict(
+                            last_obs[polid],  # type: ignore[arg-type]
+                            state=states,
+                            episode_start=episode_starts,
+                            deterministic=deterministic,
+                        )
+                else:
+                    action_masks = simulator.get_action_masks(last_obs[polid])
+                    # print('action_masks', action_masks)
+                    actions, states = policy.predict(
+                            last_obs[polid],  # type: ignore[arg-type]
+                            state=states,
+                            episode_start=episode_starts,
+                            deterministic=deterministic,
+                            action_masks=action_masks
+                        )
+ 
                 all_actions[polid] = actions
 
                 if hasattr(all_actions[polid], 'cpu'):
