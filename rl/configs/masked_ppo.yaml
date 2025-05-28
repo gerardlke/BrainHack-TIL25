@@ -9,7 +9,7 @@ env:
     num_iters: 100
     eval_mode: False
     frame_stack_size: 4
-    render_mode:
+    render_mode: 
     collisions: True
     viewcone_only: False
     see_scout_reward: True
@@ -22,7 +22,7 @@ env:
     num_iters: 100
     eval_mode: True
     frame_stack_size: 4
-    render_mode:
+    render_mode: 
     collisions: True
     viewcone_only: False
     see_scout_reward: True
@@ -37,9 +37,9 @@ policies:
     policy: 'MultiInputPolicy'
     # path: /mnt/e/BrainHack-TIL25/results/do_NOT_delete/train_0bf0b/train_0bf0b_00008/novice_ppo_long_binaryenv_varyall_novice_True_run_train_0bf0b_00008_4915200_steps.zip
 
-  # 1:
-  #   algorithm: MaskablePPO
-  #   policy: 'MultiInputPolicy'
+  1:
+    algorithm: MaskablePPO
+    policy: 'MultiInputPolicy'
 
   # 2:
   #   algorithm: MaskablePPO
@@ -51,7 +51,7 @@ policies:
 
 
 agent_roles: [0, 1, 2, 3]
-policy_mapping: [0, 0, 0, 0,]
+policy_mapping: [1, 0, 0, 0,]
 
 train:
   n_steps: 1000
@@ -82,7 +82,7 @@ tune:
     choices: [512, 2048]
   num_iters:
     type: choice
-    choices: [100]
+    choices: [100, 300, 1000]
   guard_captures:
     type: choice
     choices: [50, 200, 500]
@@ -126,7 +126,7 @@ tune:
       learning_rate:
         type: loguniform
         min: 1e-5
-        max: 1e-2
+        max: 1e-3
 
       gamma:
         type: choice
@@ -156,39 +156,39 @@ tune:
         type: choice
         choices: [0.90, 0.95, 0.99]
     
-    # 1:
-    #   learning_rate:
-    #     type: loguniform
-    #     min: 1e-5
-    #     max: 1e-2
+    1:
+      learning_rate:
+        type: loguniform
+        min: 1e-5
+        max: 1e-3
 
-    #   gamma:
-    #     type: choice
-    #     choices: [0.90, 0.95, 0.99]
-    #     # min: 0.90
-    #     # max: 0.99
+      gamma:
+        type: choice
+        choices: [0.90, 0.95, 0.99]
+        # min: 0.90
+        # max: 0.99
 
-    #   batch_size:
-    #     type: choice
-    #     choices: [32, 64]
+      batch_size:
+        type: choice
+        choices: [32, 64]
 
-    #   n_epochs:
-    #     type: choice
-    #     choices: [5, 10]
+      n_epochs:
+        type: choice
+        choices: [5, 10]
 
-    #   vf_coef:
-    #     type: uniform
-    #     min: 0.30
-    #     max: 0.70
+      vf_coef:
+        type: uniform
+        min: 0.30
+        max: 0.70
 
-    #   ent_coef:
-    #     type: loguniform
-    #     min: 1e-4
-    #     max: 1e-1
+      ent_coef:
+        type: loguniform
+        min: 1e-4
+        max: 1e-1
 
-    #   gae_lambda:
-    #     type: choice
-    #     choices: [0.90, 0.95, 0.99]
+      gae_lambda:
+        type: choice
+        choices: [0.90, 0.95, 0.99]
     
     # 2:
     #   learning_rate:
