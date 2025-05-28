@@ -126,7 +126,7 @@ tune:
       learning_rate:
         type: loguniform
         min: 1e-5
-        max: 1e-2
+        max: 1e-3
 
       gamma:
         type: choice
@@ -160,7 +160,7 @@ tune:
       learning_rate:
         type: loguniform
         min: 1e-5
-        max: 1e-2
+        max: 1e-3
 
       gamma:
         type: choice
@@ -183,8 +183,8 @@ tune:
 
       ent_coef:
         type: loguniform
-        min: 1e-4
-        max: 1e-1
+        min: 1e-6
+        max: 1e-3
 
       gae_lambda:
         type: choice
@@ -194,7 +194,7 @@ tune:
       learning_rate:
         type: loguniform
         min: 1e-5
-        max: 1e-2
+        max: 1e-3
 
       gamma:
         type: choice
@@ -217,8 +217,8 @@ tune:
 
       ent_coef:
         type: loguniform
-        min: 1e-4
-        max: 1e-1
+        min: 1e-6
+        max: 1e-3
 
       gae_lambda:
         type: choice
@@ -228,7 +228,7 @@ tune:
       learning_rate:
         type: loguniform
         min: 1e-5
-        max: 1e-2
+        max: 1e-3
 
       gamma:
         type: choice
@@ -251,8 +251,8 @@ tune:
 
       ent_coef:
         type: loguniform
-        min: 1e-4
-        max: 1e-1
+        min: 1e-6
+        max: 1e-3
 
       gae_lambda:
         type: choice

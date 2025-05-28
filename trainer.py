@@ -538,6 +538,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         # step a: Rearrange the order of directions to fit action space order
         curr_tile_walls = test[:, :4, 2, 2]
         ### IN HERE, LETS SAY YOU GET [0, 0, 1, 1]. This translates to 
+        # [0, 0, 1, 1, 0, 1, 0, 0]
         # left of the agent, behind the agent, right of the agent, forward of agent. AGENT POV
         # i,e top and right of agent have a wall. why did ryan make it this way???
         # anyways lbrf -> fblr
