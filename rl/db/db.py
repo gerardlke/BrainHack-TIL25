@@ -1,6 +1,6 @@
 """
 The sole purpose of this script is to assist in Ben's self-play,
-where many variables wil be hard-coded to the specific use case.
+where many variables wil be hard-coded to our specific use case.
 """
 
 import sqlite3
@@ -85,39 +85,54 @@ class RL_DB:
         """
         execute_query(query)
 
-    def add_checkpoint(self, connection, name, email):
+    def add_checkpoints(checkpoints):
+        """Adds multiple checkpoints into checkpoints table."""  # TODO: Can choose to optimise to instantaneous batch insertion 
+        for checkpoint in checkpoints:
+            self.add_checkpoint(checkpoint)
+
+    def add_checkpoint(self, name, email):  # TODO: Add in all fields once table fields are finalised
         """Adds a new checkpoint to the checkpoints table."""
         query = f"""
         INSERT INTO {DB_TABLE} (name, email)
         VALUES (?, ?);
         """
-        # Use parameters (tuple) for safer SQL
         last_id = execute_query(query, (name, email))
         if last_id is not None:
             print(f"Added user: {name} ({email}) with ID: {last_id}")
         return last_id
         
-    def delete_all_checkpoints(self, connection, user_id):
+    def delete_all_checkpoints(self):
         """Deletes all checkpoints from the table."""
         query = f"DELETE FROM {self.table_name};"
-        execute_query(query, (user_id,))
+        execute_query(query)
         print(f"Deleted all checkpoints.")
 
-    def delete_checkpoint(self, connection, ???):
-        """Deletes a checkpoint by *** from the checkpoints table."""
+    def delete_checkpoint(self, id)
+        """Deletes a checkpoint by id??? from the checkpoints table."""
         query = f"DELETE FROM {self.table_name} WHERE id = ?;"
         execute_query(query, (user_id,))
         print(f"Deleted checkpoint with ID: {user_id}")
 
-    def get_all_checkpoints(self, connection):
+    def get_all_checkpoints(self):
         """Retrieves all checkpoints from the checkpoints table."""
         query = f"SELECT * FROM {self.table_name};"
         users = execute_query_and_return(query)
         if users:
             return users
-        print("\nNo users found in the database.\n")
+        print("\nNo checkpoints found in the database.\n")
 
-    # --- Database Export/Import (for "moving" the DB) ---
+    def get_checkpoint_by_policy(self, policy, shuffle=False):
+        """Retrieves checkpoints from the checkpoints table by index."""
+        query = f"""
+        SELECT * FROM {self.table_name}
+        WHERE policy = ?;
+        """
+        checkpoints = execute_query_and_return(query, (policy,))
+        if checkpoints:
+            return checkpoints
+        print(f"\nNo checkpoints found in the database for policy index {policy}.\n")
+
+    # Database saving
 
     def export_database_to_sql_dump(self, db_file_path, export_sql_file_path):
         """
@@ -143,12 +158,11 @@ if __name__ == "__main__":
 
     db.set_up_db(db_file_path)
 
-    db.add_checkpoint()
+    sample_data = {}
+    db.add_checkpoints(sample_data)
 
     db.get_all_checkpoints(db_connection)
         
     db.export_database_to_sql_dump(db_file_path, args.export_sql)
 
     db.shut_down_db()
-
-    print("\nScript finished.")

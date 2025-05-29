@@ -185,3 +185,7 @@ dreamervenv
 torchvenv
 ray_results
 SIMPLE
+
+# DB stuff
+*.db
+*.sql
