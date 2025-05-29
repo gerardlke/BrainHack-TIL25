@@ -317,6 +317,8 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         all_actions = [None] * self.num_policies
         all_values = [None] * self.num_policies
         all_log_probs = [None] * self.num_policies
+        all_action_masks = [None] * self.num_policies
+        last_values = [None] * self.num_policies
         total_rewards = [[] for _ in range(self.num_policies)] 
         
         n_steps = 0
@@ -358,6 +360,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
                         ) = policy.policy.forward(last_obs[polid])
                     else:
                         action_masks = self.get_action_masks(last_obs[polid])
+                        all_action_masks[polid] = action_masks
                         # print('action_masks', action_masks)
                         (
                             all_actions[polid],
@@ -383,7 +386,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
                     all_clipped_actions[polid] = clipped_actions
                 # print('------------POLICY FORWARD TIME-------------')
                 # print(time.time() - start)
-
+            
             for polid, policy_agent_index in enumerate(self.policy_agent_indexes):
                 step_actions[policy_agent_index] = all_clipped_actions[polid]
 
@@ -400,7 +403,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
             all_infos = self.format_env_returns(infos, policy_agent_indexes=self.policy_agent_indexes, to_tensor=False)
 
             for policy in self.policies:
-                policy.num_timesteps += self.num_vec_envs
+                policy.n_steps += self.num_vec_envs
 
             [callback.update_locals(locals()) for callback in callbacks]
             [callback.on_step() for callback in callbacks]
@@ -418,15 +421,35 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
                     all_actions[polid] = all_actions[polid].reshape(-1, 1)
                 if hasattr(all_actions[polid], 'cpu'):
                     all_actions[polid] = all_actions[polid].cpu().numpy()
-                # all_obs[polid] is a list[dict[str, np.ndarray]], but add only wants per dict. hence this loop
-                policy.rollout_buffer.add(
-                    obs=deepcopy(last_obs_buffer[polid]),
-                    action=deepcopy(all_actions[polid]),
-                    reward=deepcopy(all_rewards[polid]),
-                    episode_start=deepcopy(policy._last_episode_starts),
-                    value=deepcopy(all_values[polid]),
-                    log_prob=deepcopy(all_log_probs[polid]),
-                )
+                if 'action_masks' not in inspect.signature(policy.rollout_buffer.add).parameters:
+                    policy.rollout_buffer.add(
+                        obs=deepcopy(last_obs_buffer[polid]),
+                        action=deepcopy(all_actions[polid]),
+                        reward=deepcopy(all_rewards[polid]),
+                        episode_start=deepcopy(policy._last_episode_starts),
+                        value=deepcopy(all_values[polid]),
+                        log_prob=deepcopy(all_log_probs[polid]),
+                    )
+                else:
+                    policy.rollout_buffer.add(
+                        obs=deepcopy(last_obs_buffer[polid]),
+                        action=deepcopy(all_actions[polid]),
+                        reward=deepcopy(all_rewards[polid]),
+                        episode_start=deepcopy(policy._last_episode_starts),
+                        value=deepcopy(all_values[polid]),
+                        log_prob=deepcopy(all_log_probs[polid]),
+                        action_masks=deepcopy(all_action_masks[polid])
+                    )
+                # thing = dict(
+                #         obs=deepcopy(last_obs_buffer[polid]),
+                #         action=deepcopy(all_actions[polid]),
+                #         reward=deepcopy(all_rewards[polid]),
+                #         episode_start=deepcopy(policy._last_episode_starts),
+                #         value=deepcopy(all_values[polid]),
+                #         log_prob=deepcopy(all_log_probs[polid]),
+                #         action_masks=deepcopy(all_action_masks[polid])
+                #     )
+                # print('wacky dict', thing)
                 policy._last_obs = all_curr_obs_buffer[polid]
                 policy._last_episode_starts = all_dones[polid]
                 total_rewards[polid].append(all_rewards[polid])
@@ -436,6 +459,14 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
             last_obs = all_curr_obs
             last_obs_buffer = all_curr_obs_buffer  # APPARENTLY I WAS JUST ADDING THE SAME OBSERVATION AGAIN AND AGAIN NO WONDER CCB
             all_last_episode_starts = all_dones
+
+        with torch.no_grad():
+            # Compute value for the last timestep
+            # Masking is not needed here, the choice of action doesn't matter.
+            # We only want the value of the current observation.
+            for polid, policy in enumerate(self.policies):
+                values = policy.policy.predict_values(last_obs[polid])  # type: ignore[arg-type]
+                policy.rollout_buffer.compute_returns_and_advantage(last_values=values, dones=all_last_episode_starts[polid])
 
         [callback.on_rollout_end() for callback in callbacks]
         eval_callback.on_rollout_end()
@@ -536,6 +567,10 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
 
         """
         viewcone = observation['viewcone']
+        if not self.action_masking:
+            print('this should not be running if you are doing action masking')
+            return np.ones((viewcone.shape[0], self.action_space.n))
+
         # will fail for the case of normal obs for now
         action_masks = np.zeros((viewcone.shape[0], self.action_space.n))
         test = rearrange(viewcone, 'A (S R C B) -> A S B R C', B=8, R=7, C=5)
