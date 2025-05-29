@@ -221,19 +221,23 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         # self.env returns a dict, where each key is (M * N, ...), M is number of envs, N is number of agents.
         # we determine number of envs based on the output shape (should find a better way to do this)
 
-        reset_obs = self.env.reset()
-        n_rollout_steps = self.n_steps * self.num_vec_envs
+        last_obs = self.env.reset()
+        last_obs_buffer = None
 
+        n_rollout_steps = self.n_steps * self.num_vec_envs
+        
         while self.num_timesteps < total_timesteps:
             # environment sampling. has to be done in this particular way because of
             # gridworld's perculiarities
             start = time.time()
-            total_rewards, rollout_timesteps, continue_training = self.collect_rollouts(
-                last_obs=reset_obs,
+            total_rewards, rollout_timesteps, continue_training, last_obs, last_obs_buffer = self.collect_rollouts(
+                last_obs=last_obs,
                 n_rollout_steps=n_rollout_steps,  # rollout increments timesteps by number of envs
                 callbacks=callbacks,
                 eval_callback=eval_callback,
+                last_obs_buffer=last_obs_buffer,
             )
+
             if not continue_training:
                 break  # early stopping
             self.num_timesteps += rollout_timesteps
@@ -286,6 +290,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
             n_rollout_steps: int,
             eval_callback,
             callbacks: list = [],
+            last_obs_buffer = None
         ):
         """
         Helper function to collect rollouts (sample the env and feed observations into the agents, vice versa)
@@ -318,8 +323,9 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         # before formatted, last_obs is the direct return of self.env.reset()
         step_actions = np.empty(self.num_vec_envs, dtype=np.int64)
 
-        last_obs_buffer = self.format_env_returns(last_obs, self.policy_agent_indexes, to_tensor=False)
-        last_obs = self.format_env_returns(last_obs, self.policy_agent_indexes, device=self.policies[0].device, to_tensor=True)
+        if last_obs_buffer is None:
+            last_obs_buffer = self.format_env_returns(last_obs, self.policy_agent_indexes, to_tensor=False)
+            last_obs = self.format_env_returns(last_obs, self.policy_agent_indexes, device=self.policies[0].device, to_tensor=True)
 
         # iterate over policies, and do pre-rollout setups.
         # start = time.time()
@@ -428,12 +434,13 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
             # print(time.time() - start)
 
             last_obs = all_curr_obs
+            last_obs_buffer = all_curr_obs_buffer  # APPARENTLY I WAS JUST ADDING THE SAME OBSERVATION AGAIN AND AGAIN NO WONDER CCB
             all_last_episode_starts = all_dones
 
         [callback.on_rollout_end() for callback in callbacks]
         eval_callback.on_rollout_end()
 
-        return total_rewards, n_steps, continue_training
+        return total_rewards, n_steps, continue_training, last_obs, last_obs_buffer
 
     def load_policy_id(
         self,
@@ -529,7 +536,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
 
         """
         viewcone = observation['viewcone']
-        
+        # will fail for the case of normal obs for now
         action_masks = np.zeros((viewcone.shape[0], self.action_space.n))
         test = rearrange(viewcone, 'A (S R C B) -> A S B R C', B=8, R=7, C=5)
         test = test[:, -1, :, :, :]
