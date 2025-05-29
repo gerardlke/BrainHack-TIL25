@@ -60,6 +60,7 @@ def build_env(
     binary,
     self_play: bool,
     policy_mapping,
+    agent_roles,
     env_wrappers: list[BaseWrapper] | None = None,
     render_mode: str | None = None,
     eval_mode: bool = False,
@@ -109,7 +110,7 @@ def build_env(
     env = frame_stack_v3(env, stack_size=frame_stack_size, stack_dim=0)
     
     if self_play:
-        env = selfplay_wrapper(env, policy_mapping=policy_mapping)
+        env = selfplay_wrapper(env, policy_mapping=policy_mapping, agent_roles=agent_roles)
     else:
         env = ss.pettingzoo_env_to_vec_env_v1(env)
         env = ss.concat_vec_envs_v1(env, num_vec_envs=num_vec_envs, num_cpus=4, base_class='stable_baselines3')
@@ -124,7 +125,7 @@ TODO: things to try for our environments:
 3. See if you can exploit distance from scout into some latent state of the model (recurrentPPO?)
 """
 
-def selfplay_wrapper(env, policy_mapping):
+def selfplay_wrapper(env, policy_mapping, agent_roles):
     """
     A wrapper around pettingzoo env for selfplay. Ok not really self-play especially if you have different policies, but lets roll
     with it. A selfplay env differs from the normal env according to the following:
@@ -142,9 +143,10 @@ def selfplay_wrapper(env, policy_mapping):
 
     Args:
         - env: Instantiated env
-        - policy_mapping: Mapping of policies to agents. This is because
-            our network pool technically encompasses policies, not agents, and the mapping from policy to agents
+        - policy_mapping: Mapping of policies to agents. This is because our network pool
+            technically encompasses policies, not agents, and the mapping from policy to agents
             is defined in config (which is passed here.)
+        - agent_roles: Indexes of each agent. This is used for db setup / retrieval
     """
     assert any('ParallelEnv' in name.__name__ for name in type(env).mro()), "Assertion failed. selfplay_wrapper is meant to " \
         "wrap around a parallel environment."
@@ -158,6 +160,7 @@ def selfplay_wrapper(env, policy_mapping):
             super().__init__(env)
             self.db_path = db_path
             self.policy_mapping = policy_mapping
+            self.agent_roles = agent_roles
             self.npcs = None
             self.loaded_policies = None
             self.opponent_sampling = opponent_sampling
@@ -168,7 +171,7 @@ def selfplay_wrapper(env, policy_mapping):
                 'policies to load in for each agent.'
             environment_policies = [item for item, keep in zip(self.policy_mapping, self.npcs) if keep]
             self.loaded_policies = {
-                k: self.load_policy(self.db_path) for k in environment_policies
+                k: self.load_policy(k) for k in environment_policies
             }
             pass
 
@@ -177,23 +180,40 @@ def selfplay_wrapper(env, policy_mapping):
             This is the core reason for incompatibility with supersuit vector environments n whatnot. Reset now requires us to recieve
             some kinda of boolean mask on which agents are currently NPCs and which are learning (i.e their actions are incoming and not internal to the
             environment.) As this is not supported generally, this wrapper must be the last to wrap around the environment.
+            
+            Args:
+                - npcs: Boolean list of what agents are considered part of environment. If [0, 1, 1, 1], this means that this environment
+                    will load in the policies tied to agents at indexes 1, 2 and 3 (irregardless of if it is the same policy)
             """
             # somethign about loading best models here
             assert max(npcs) == 1 and min(npcs) == 0, 'Assertion failed, npcs list recieved by SelfPlayWrapper reset is not a boolean mask.'
-            assert npcs.count(1) == 1, 'Assertion failed, npcs list recieved by SelfPlayWrapper contains more than one element 1; we only support ' \
-                'one non-npc agent (one external agent) currently.'
+            assert npcs.count(0) == 1, 'Assertion failed, npcs list recieved by SelfPlayWrapper contains more than one element 1; we only support ' \
+                'one external non-npc agent (mask value 0) currently.'
+            
+            self.npcs = npcs  # this tells us what agents are to be considered as part of environment.
             self.load_policies()
-            self.npcs = npcs  # this tells us what agents are 
-            self.env.reset(seed, options)
+            
+            return self.env.reset(seed, options)
 
-        def step(self, action):
+        def step(self, actions, obs):
             """
             Although we support many to one mapping of agents to policies, during stepping we will manually loop through all NPC agents
             and run their relevant policy on the relevant agent observation. 
+
+            Actions here are not raw numpy numbers, but rather a dictionary of array, where integer represents
+            agent index. The reason we index by agent is because despite policies producing actions, actions are finally concatenated
+            (in order of agents) and sent to the actual environment step, hence why we need actions indexed by agents from the simulator.
+            
+            Observations are also required, since for safety we 
             """
 
-    asddfhg
+        def load_policy(self, agent_idx):
+            return 'example_policy_here'
 
+    selfplay = SelfPlayWrapper(env, 'path', 'thing')
+    test = selfplay.reset(npcs=[0, 1, 1, 1])
+    print('test', test)
+    print('selfplay policies', selfplay.loaded_policies)
 
 class modified_env(raw_env):
     """
@@ -204,6 +224,9 @@ class modified_env(raw_env):
 
     Also, action masking is not conducted here, due to multiple wrappings of vector envs
     paralzying us and rendering us unable to call this function here. It will lie within the simulator instead.
+    
+    Also, default to normalizing environment step and location things, to stabilize training.
+    This is done within this modified env, without a wrapper (i couldn't find one that does normalization within each key's values)
     """
     def __init__(self,
             reward_names,
@@ -622,10 +645,12 @@ class modified_env(raw_env):
                     )
             
         if not self.viewcone_only:
+            # all values are normed / standardized to be between 0 and 1. 
+            # this should help significantly stabilize training.
             all_obs_spaces["direction"] = Box(0, 1, shape=(len(Direction), ))
             all_obs_spaces["scout"] = Box(0, 1, shape=(1, ))
-            all_obs_spaces["location"] = Box(0, self.size, shape=(2,), dtype=np.int64)
-            all_obs_spaces["step"] = Box(0, self.num_iters + 1, shape=(1,))
+            all_obs_spaces["location"] = Box(0, 1, shape=(2,))
+            all_obs_spaces["step"] = Box(0, 1, shape=(1,))
 
         thing = Dict(
             **all_obs_spaces
@@ -765,15 +790,20 @@ class modified_env(raw_env):
 
         # return scout integer as a one size array (so stacker doesnt complain)
         scout = obs['scout'] # 0 or 1.
-        scout = np.array(scout)
+        scout = np.array([scout])
 
         # do the same for step
-        step = obs['step'] # 0 or 1.
-        step = np.array(step)
+        step = obs['step']
+        step = np.array([step / (self.num_iters + 1)])  # normalize.
+
+        # normalize for location.
+        location = obs['location']
+        location = location / self.size
 
         obs['direction'] = one_hot_dir
         obs['scout'] = scout
         obs['step'] = step
+        obs['location'] = location
 
         return obs
 
@@ -848,4 +878,5 @@ build_env(
     binary=True,
     self_play=True,
     policy_mapping=[0, 1, 2, 3],
+    agent_roles=[0, 1, 2, 3]
 )
