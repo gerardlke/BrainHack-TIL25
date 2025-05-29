@@ -58,6 +58,8 @@ def build_env(
     reward_names,
     rewards_dict,
     binary,
+    self_play: bool,
+    policy_mapping,
     env_wrappers: list[BaseWrapper] | None = None,
     render_mode: str | None = None,
     eval_mode: bool = False,
@@ -87,7 +89,7 @@ def build_env(
         **kwargs: other kwargs to pass to the environment class
     """
 
-    env = modified_env(
+    orig_env = modified_env(
         render_mode=render_mode,
         reward_names=reward_names,
         rewards_dict=rewards_dict,
@@ -97,26 +99,22 @@ def build_env(
         binary=binary,
         **kwargs
     )
-    # if env_wrappers is None:
-    #     env_wrappers = [
-    #         FlattenDictWrapper,
-    #     ]
-    #     print('YES USING FLATTENDICTWRAPPER')
-    # else:
-    #     raise AssertionError('not using flatten dict, this behaviour is unexpected')
-    # for wrapper in env_wrappers:
-    #     env = wrapper(env)  # type: ignore
+
     # this wrapper helps error handling for discrete action spaces
-    env = wrappers.AssertOutOfBoundsWrapper(env)
+    env = wrappers.AssertOutOfBoundsWrapper(orig_env)
     # Provides a wide variety of helpful user errors
     env = wrappers.OrderEnforcingWrapper(env)
     
-    parallel_env = aec_to_parallel(env)
-    frame_stack = frame_stack_v3(parallel_env, stack_size=frame_stack_size, stack_dim=0)
-    vec_env = ss.pettingzoo_env_to_vec_env_v1(frame_stack)
-    vec_env = ss.concat_vec_envs_v1(vec_env, num_vec_envs=num_vec_envs, num_cpus=4, base_class='stable_baselines3')
+    env = aec_to_parallel(env)
+    env = frame_stack_v3(env, stack_size=frame_stack_size, stack_dim=0)
+    
+    if self_play:
+        env = selfplay_wrapper(env, policy_mapping=policy_mapping)
+    else:
+        env = ss.pettingzoo_env_to_vec_env_v1(env)
+        env = ss.concat_vec_envs_v1(env, num_vec_envs=num_vec_envs, num_cpus=4, base_class='stable_baselines3')
 
-    return env, vec_env
+    return orig_env, env
 
 
 """
@@ -126,7 +124,75 @@ TODO: things to try for our environments:
 3. See if you can exploit distance from scout into some latent state of the model (recurrentPPO?)
 """
 
-def 
+def selfplay_wrapper(env, policy_mapping):
+    """
+    A wrapper around pettingzoo env for selfplay. Ok not really self-play especially if you have different policies, but lets roll
+    with it. A selfplay env differs from the normal env according to the following:
+    - observation_space: Only as big as one agent's observation space
+    - action_space: Only as big as one agent's action space
+    - step: Each step only takes in one agent's action, and automatically runs prediction for other NPC models.
+        (lets call them these for now on)
+    - reset: Depending on the reset strategy, we may randomly choose other weights to be loaded in, so the learning
+        agent has more variety of opponents to play against. We could swap opponents after each train method call
+        (i.e after learning policy's rollout buffer is completely gathered) or just every reset call of the environment. see how
+    
+    This environment will wrap around a parallelenv, so that when we call step with one agent's set of actions, we run
+    a custom step function that first runs predict to get all policies actions, then runs the parallelenv's step function
+    on all actions concatenated together.
+
+    Args:
+        - env: Instantiated env
+        - policy_mapping: Mapping of policies to agents. This is because
+            our network pool technically encompasses policies, not agents, and the mapping from policy to agents
+            is defined in config (which is passed here.)
+    """
+    assert any('ParallelEnv' in name.__name__ for name in type(env).mro()), "Assertion failed. selfplay_wrapper is meant to " \
+        "wrap around a parallel environment."
+    
+    class SelfPlayWrapper(BaseWrapper):
+        """
+        Self play as a wrapper. We load in different checkpoints every time the environment reset function
+        is called, not during init.
+        """
+        def __init__(self, env, db_path, opponent_sampling):
+            super().__init__(env)
+            self.db_path = db_path
+            self.policy_mapping = policy_mapping
+            self.npcs = None
+            self.loaded_policies = None
+            self.opponent_sampling = opponent_sampling
+
+        def load_policies(self):
+            # arbitrary load best checkpoint for each agent function
+            assert self.npcs is not None, 'Assertion failed. This method was called while self.npcs attribute has not been set, so we dont know which '\
+                'policies to load in for each agent.'
+            environment_policies = [item for item, keep in zip(self.policy_mapping, self.npcs) if keep]
+            self.loaded_policies = {
+                k: self.load_policy(self.db_path) for k in environment_policies
+            }
+            pass
+
+        def reset(self, npcs: list, seed: int | None=None, options: dict | None=None):  # type: ignore
+            """
+            This is the core reason for incompatibility with supersuit vector environments n whatnot. Reset now requires us to recieve
+            some kinda of boolean mask on which agents are currently NPCs and which are learning (i.e their actions are incoming and not internal to the
+            environment.) As this is not supported generally, this wrapper must be the last to wrap around the environment.
+            """
+            # somethign about loading best models here
+            assert max(npcs) == 1 and min(npcs) == 0, 'Assertion failed, npcs list recieved by SelfPlayWrapper reset is not a boolean mask.'
+            assert npcs.count(1) == 1, 'Assertion failed, npcs list recieved by SelfPlayWrapper contains more than one element 1; we only support ' \
+                'one non-npc agent (one external agent) currently.'
+            self.load_policies()
+            self.npcs = npcs  # this tells us what agents are 
+            self.env.reset(seed, options)
+
+        def step(self, action):
+            """
+            Although we support many to one mapping of agents to policies, during stepping we will manually loop through all NPC agents
+            and run their relevant policy on the relevant agent observation. 
+            """
+
+    asddfhg
 
 
 class modified_env(raw_env):
@@ -775,3 +841,11 @@ def frame_stack_v3(env, stack_size=4, stack_dim=-1):
 
     return shared_wrapper(env, FrameStackModifier)
 
+build_env(
+    1,
+    RewardNames,
+    {},
+    binary=True,
+    self_play=True,
+    policy_mapping=[0, 1, 2, 3],
+)
