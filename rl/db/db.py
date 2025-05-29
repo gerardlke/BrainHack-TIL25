@@ -3,11 +3,11 @@ The sole purpose of this script is to assist in Ben's self-play,
 where many variables wil be hard-coded to our specific use case.
 """
 
+import json
 import sqlite3
 from sqlite3 import Error
-import os
-import argparse
-from pathlib import Path
+from datetime import datetime
+
 
 # Default configurations
 DEFAULT_DB_FILE = "RL.db"
@@ -26,8 +26,24 @@ class RL_DB:
 
     def shut_down_db(self):
         """Shuts down the database instance."""
-        if self.connection:
-            self.connection.close()
+        try:
+            if self.connection:
+                self.connection.close()
+        except Error as e:
+            print(f'Error shutting down connection to db: {e}')
+
+    def drop_table(self):
+        """
+        Drops (deletes) a specified table from the database, including its structure and all data.
+        """
+        drop_table_query = f"DROP TABLE IF EXISTS {self.table_name};"
+        try:
+            cursor = self.connection.cursor()
+            cursor.execute(drop_table_query)
+            self.connection.commit()
+            print(f"Table '{self.table_name}' dropped successfully.")
+        except Error as err:
+            print(f"Error dropping table: '{err}'")
 
     # Database connections
 
@@ -54,7 +70,7 @@ class RL_DB:
             print(f"Error executing query: '{e}'")
             return None
 
-    def execute_query_and_return(self, connection, query, params=None):
+    def execute_query_and_return(self, query, params=None):
         """Executes a SQL query and returns the results."""
         cursor = self.connection.cursor()
         result = None
@@ -75,51 +91,60 @@ class RL_DB:
         query = f"""
         CREATE TABLE IF NOT EXISTS {self.table_name} (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            filepath TEXT NOT NULL,
-            policy INT NOT NULL,
-            datetime NOT NULL,
-            score NOT NULL,
-            hyperparameters,
-            best_opponents
+            filepath TEXT NOT NULL UNIQUE,
+            timestamp DATETIME NOT NULL,
+            policy_id INTEGER NOT NULL,
+            hyperparameters JSON,
+            score REAL NOT NULL,
+            best_opponents TEXT
         );
         """
-        execute_query(query)
+        res = self.execute_query(query)
+        if res is not None:
+            print(f'Table {self.table_name} set up successfully.')
 
-    def add_checkpoints(checkpoints):
+    def add_checkpoints(self, checkpoints):
         """Adds multiple checkpoints into checkpoints table."""  # TODO: Can choose to optimise to instantaneous batch insertion 
         for checkpoint in checkpoints:
-            self.add_checkpoint(checkpoint)
+            self.add_checkpoint(
+                filepath=checkpoint.get('filepath'),
+                policy_id=checkpoint.get('policy_id'),
+                hyperparameters=checkpoint.get('hyperparameters'),
+                score=checkpoint.get('score'),
+                best_opponents=checkpoint.get('best_opponents')
+            )
 
-    def add_checkpoint(self, name, email):  # TODO: Add in all fields once table fields are finalised
+    def add_checkpoint(self, filepath='', policy_id=0, hyperparameters={}, score=0.0, best_opponents=''):  # TODO: Add in all fields once table fields are finalised
         """Adds a new checkpoint to the checkpoints table."""
         query = f"""
-        INSERT INTO {DB_TABLE} (name, email)
-        VALUES (?, ?);
+        INSERT INTO {DB_TABLE} (
+            filepath, timestamp, policy_id, hyperparameters, score, best_opponents
+        )
+        VALUES (?, ?, ?, ?, ?, ?);
         """
-        last_id = execute_query(query, (name, email))
+        last_id = self.execute_query(query, (filepath, datetime.now().isoformat(), policy_id, json.dumps(hyperparameters), score, best_opponents))
         if last_id is not None:
-            print(f"Added user: {name} ({email}) with ID: {last_id}")
-        return last_id
+            print(f"Added checkpoint: ({filepath}, {policy_id}, {hyperparameters}, {score}, {best_opponents})")
         
     def delete_all_checkpoints(self):
         """Deletes all checkpoints from the table."""
         query = f"DELETE FROM {self.table_name};"
-        execute_query(query)
-        print(f"Deleted all checkpoints.")
+        self.execute_query(query)
+        print("Deleted all checkpoints.")
 
-    def delete_checkpoint(self, id)
+    def delete_checkpoint(self, id):
         """Deletes a checkpoint by id??? from the checkpoints table."""
         query = f"DELETE FROM {self.table_name} WHERE id = ?;"
-        execute_query(query, (user_id,))
-        print(f"Deleted checkpoint with ID: {user_id}")
+        self.execute_query(query, (id,))
+        print(f"Deleted checkpoint with ID: {id}")
 
     def get_all_checkpoints(self):
         """Retrieves all checkpoints from the checkpoints table."""
         query = f"SELECT * FROM {self.table_name};"
-        users = execute_query_and_return(query)
+        users = self.execute_query_and_return(query)
         if users:
             return users
-        print("\nNo checkpoints found in the database.\n")
+        print("\nNo checkpoints found in the database.")
 
     def get_checkpoint_by_policy(self, policy, shuffle=False):
         """Retrieves checkpoints from the checkpoints table by index."""
@@ -127,7 +152,7 @@ class RL_DB:
         SELECT * FROM {self.table_name}
         WHERE policy = ?;
         """
-        checkpoints = execute_query_and_return(query, (policy,))
+        checkpoints = self.execute_query_and_return(query, (policy,))
         if checkpoints:
             return checkpoints
         print(f"\nNo checkpoints found in the database for policy index {policy}.\n")
@@ -154,15 +179,35 @@ class RL_DB:
 
 # Sample code
 if __name__ == "__main__":
-    db = RL_DB(db_file_path=DEFAULT_DB_FILE)
+    db = RL_DB(db_file=DEFAULT_DB_FILE, table_name=DB_TABLE)
 
-    db.set_up_db(db_file_path)
+    db.set_up_db()
+    db.drop_table()
 
-    sample_data = {}
+    db.set_up_db()
+
+    sample_data = [
+        {
+            'filepath': 'file1.pth',
+            'policy_id': 0, 
+            'hyperparameters': {'test':1},
+            'score': 0.5,
+            'best_opponents': ''
+        },
+        {
+            'filepath': 'file2.pth',
+            'policy_id': 0, 
+            'hyperparameters': {'test':1},
+            'score': 0.5,
+            'best_opponents': ''
+        },
+    ]
     db.add_checkpoints(sample_data)
 
-    db.get_all_checkpoints(db_connection)
+    checkpoints = db.get_all_checkpoints()
+    for checkpoint in checkpoints:
+        print('checkpoint', checkpoint['filepath'], checkpoint['policy_id'], checkpoint['hyperparameters'])
         
-    db.export_database_to_sql_dump(db_file_path, args.export_sql)
+    # db.export_database_to_sql_dump(db_file_path)
 
     db.shut_down_db()
