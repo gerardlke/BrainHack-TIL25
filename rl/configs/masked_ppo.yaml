@@ -9,7 +9,7 @@ env:
     num_iters: 100
     eval_mode: False
     frame_stack_size: 4
-    render_mode:
+    render_mode: 
     collisions: True
     viewcone_only: False
     see_scout_reward: True
@@ -22,7 +22,7 @@ env:
     num_iters: 100
     eval_mode: True
     frame_stack_size: 4
-    render_mode:
+    render_mode: 
     collisions: True
     viewcone_only: False
     see_scout_reward: True
@@ -82,7 +82,7 @@ tune:
     choices: [512, 2048]
   num_iters:
     type: choice
-    choices: [100]
+    choices: [100, 300, 1000]
   guard_captures:
     type: choice
     choices: [50, 200, 500]
@@ -149,8 +149,8 @@ tune:
 
       ent_coef:
         type: loguniform
-        min: 1e-6
-        max: 1e-3
+        min: 1e-5
+        max: 1e-2
 
       gae_lambda:
         type: choice
@@ -183,8 +183,8 @@ tune:
 
       ent_coef:
         type: loguniform
-        min: 1e-6
-        max: 1e-3
+        min: 1e-5
+        max: 1e-2
 
       gae_lambda:
         type: choice
@@ -217,8 +217,8 @@ tune:
 
       ent_coef:
         type: loguniform
-        min: 1e-6
-        max: 1e-3
+        min: 1e-5
+        max: 1e-2
 
       gae_lambda:
         type: choice
@@ -251,8 +251,8 @@ tune:
 
       ent_coef:
         type: loguniform
-        min: 1e-6
-        max: 1e-3
+        min: 1e-5
+        max: 1e-2
 
       gae_lambda:
         type: choice

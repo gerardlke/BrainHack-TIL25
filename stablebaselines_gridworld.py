@@ -136,6 +136,9 @@ class modified_env(raw_env):
 
     Also, action masking is not conducted here, due to multiple wrappings of vector envs
     paralzying us and rendering us unable to call this function here. It will lie within the simulator instead.
+    
+    Also, default to normalizing environment step and location things, to stabilize training.
+    This is done within this modified env, without a wrapper (i couldn't find one that does normalization within each key's values)
     """
     def __init__(self,
             reward_names,
@@ -554,10 +557,12 @@ class modified_env(raw_env):
                     )
             
         if not self.viewcone_only:
+            # all values are normed / standardized to be between 0 and 1. 
+            # this should help significantly stabilize training.
             all_obs_spaces["direction"] = Box(0, 1, shape=(len(Direction), ))
             all_obs_spaces["scout"] = Box(0, 1, shape=(1, ))
-            all_obs_spaces["location"] = Box(0, self.size, shape=(2,), dtype=np.int64)
-            all_obs_spaces["step"] = Box(0, self.num_iters + 1, shape=(1,))
+            all_obs_spaces["location"] = Box(0, 1, shape=(2,))
+            all_obs_spaces["step"] = Box(0, 1, shape=(1,))
 
         thing = Dict(
             **all_obs_spaces
@@ -697,15 +702,20 @@ class modified_env(raw_env):
 
         # return scout integer as a one size array (so stacker doesnt complain)
         scout = obs['scout'] # 0 or 1.
-        scout = np.array(scout)
+        scout = np.array([scout])
 
         # do the same for step
-        step = obs['step'] # 0 or 1.
-        step = np.array(step)
+        step = obs['step']
+        step = np.array([step / (self.num_iters + 1)])  # normalize.
+
+        # normalize for location.
+        location = obs['location']
+        location = location / self.size
 
         obs['direction'] = one_hot_dir
         obs['scout'] = scout
         obs['step'] = step
+        obs['location'] = location
 
         return obs
 
@@ -749,18 +759,17 @@ def frame_stack_v3(env, stack_size=4, stack_dim=-1):
             for k, o_space in self.old_obs_space.items():
                 tmp_stack[k] = stack_init(o_space, stack_size, stack_dim)
 
-
             self.stack = tmp_stack
 
         def modify_obs(self, obs):
             for k, stack in self.stack.items():
                 o = obs[k]
-
-                if not hasattr(obs[k], 'shape'):
+                
+                if not hasattr(o, 'shape'):
                     # fixed an issue where stack obs explodes if its an integer its trying to stack
                     # technically this can be fixed in the observe function of the env, but assuming what they pass
                     # to us are just integers, do this
-                    o = np.array(o)
+                    o = np.array([o])
 
                 self.stack[k] = stack_obs(
                     stack, o, self.old_obs_space[k], stack_size, stack_dim
