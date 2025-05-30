@@ -4,6 +4,7 @@ where many variables wil be hard-coded to our specific use case.
 """
 
 import json
+import random
 import sqlite3
 from sqlite3 import Error
 from datetime import datetime
@@ -147,13 +148,16 @@ class RL_DB:
         print("\nNo checkpoints found in the database.")
 
     def get_checkpoint_by_policy(self, policy, shuffle=False):
-        """Retrieves checkpoints from the checkpoints table by index."""
+        """Retrieves single checkpoint from the checkpoints table by index, either best index or ."""
         query = f"""
         SELECT * FROM {self.table_name}
-        WHERE policy = ?;
+        WHERE policy_id = ?
+        ORDER BY score DESC;
         """
         checkpoints = self.execute_query_and_return(query, (policy,))
         if checkpoints:
+            if shuffle:
+                random.shuffle(checkpoints)
             return checkpoints
         print(f"\nNo checkpoints found in the database for policy index {policy}.\n")
 
@@ -190,23 +194,38 @@ if __name__ == "__main__":
         {
             'filepath': 'file1.pth',
             'policy_id': 0, 
-            'hyperparameters': {'test':1},
+            'hyperparameters': {'a':2, 'b':1},
             'score': 0.5,
-            'best_opponents': ''
+            'best_opponents': 'ship'
         },
         {
             'filepath': 'file2.pth',
             'policy_id': 0, 
-            'hyperparameters': {'test':1},
+            'hyperparameters': {'a':1, 'b': 2},
+            'score': 0.6,
+            'best_opponents': 'idk'
+        },
+        {
+            'filepath': 'file3.pth',
+            'policy_id': 1, 
+            'hyperparameters': {'a':1, 'b': 3},
             'score': 0.5,
-            'best_opponents': ''
+            'best_opponents': 'um'
         },
     ]
     db.add_checkpoints(sample_data)
 
     checkpoints = db.get_all_checkpoints()
     for checkpoint in checkpoints:
-        print('checkpoint', checkpoint['filepath'], checkpoint['policy_id'], checkpoint['hyperparameters'])
+        print('1 checkpoint', checkpoint['filepath'], checkpoint['policy_id'], checkpoint['hyperparameters'], checkpoint['score'])
+
+    checkpoints = db.get_checkpoint_by_policy(0, shuffle=False)
+    for checkpoint in checkpoints:
+        print('2 checkpoint', checkpoint['filepath'], checkpoint['policy_id'], checkpoint['hyperparameters'], checkpoint['score'])
+
+    checkpoints = db.get_checkpoint_by_policy(0, shuffle=True)
+    for checkpoint in checkpoints:
+        print('3 checkpoint', checkpoint['filepath'], checkpoint['policy_id'], checkpoint['hyperparameters'], checkpoint['score'])
         
     # db.export_database_to_sql_dump(db_file_path)
 
