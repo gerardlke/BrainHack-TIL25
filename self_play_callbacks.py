@@ -10,6 +10,11 @@ from utils.files import get_best_model_name, get_model_stats
 
 import config
 
+"""
+CODE FROM SIMPLE REPOSITORY
+TODO SEE HOW WE MIGHT WANT TO DO THIS FOR US
+"""
+
 class SelfPlayCallback(EvalCallback):
   def __init__(self, opponent_type, threshold, env_name, *args, **kwargs):
     super(SelfPlayCallback, self).__init__(*args, **kwargs)
