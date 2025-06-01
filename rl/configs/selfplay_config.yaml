@@ -9,7 +9,7 @@ env:
     num_iters: 100
     eval_mode: False
     frame_stack_size: 4
-    render_mode:
+    render_mode: 'rgb_array'
     collisions: True
     viewcone_only: False
     see_scout_reward: True
@@ -24,7 +24,7 @@ env:
     num_iters: 100
     eval_mode: True
     frame_stack_size: 4
-    render_mode:
+    render_mode: 'rgb_array'
     collisions: True
     viewcone_only: False
     see_scout_reward: True
@@ -63,7 +63,7 @@ self_play: False
 db_path: somewhere
 
 train:
-  n_steps: 1000
+  n_steps: 100
   training_iters: 250000  # this already accounts for n steps
   # this is to ensure that we have the same number of TOTAL iterations, across
   # all runs. oh but it doesnt account for num of vector envs, we multiply that for
