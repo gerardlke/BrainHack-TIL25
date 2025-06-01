@@ -45,7 +45,8 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
     Acts as a wrapper around multiple policies and environments, calling them during rollouts
     and calling the policies train method afterwards.
 
-    TODO: only supports PPO right now, because stepping is different for off and on-policy models
+    TODO: only supports PPO right now, because stepping is different for off and on-policy models.
+    Can we generalize this?
     """
 
     def __init__(
@@ -63,11 +64,13 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         """
         All that is required is the configuration file.
         From there we will parse it into the appropriate components.
-        Also, action masking is done here instead of in the environment
+        Also, action masking is done here instead of in the environment. Mask function is local
+        to policy, so we hold no warranties.
 
         Init flows as follows:
-        -> Initialize training and evaluation environments.
         -> Define policy(ies), which utilize the environment observation space
+        -> Define policy-agent indexes, which are used to map the various indexes of the observation
+            during rollout collection.
         -> Define callbacks
 
         Rollout flows as follows:
@@ -83,16 +86,22 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
 
         """
         self.env = train_env
-        self.num_vec_envs = self.env.num_envs
+        self.total_envs = self.env.num_envs  # number of vec envs times number of agents from parallelization
+        self.vec_envs = train_env_config.num_vec_envs
         self.policies_config = policies_config
         self.policy_mapping = policy_mapping
         self.action_masking = use_action_masking
 
         # check if policy_mapping and policy config have the same number of policies
-        assert len(policies_config) == len(np.unique(np.array(self.policy_mapping))), f'Assertion failed. Environment suggests that there are {len(np.unique(self.policy_mapping))} ' \
-            f'total policies, but recieved policy config only has {len(policies_config)} policies.'
+        all_policies_there = len(policies_config) == len(np.unique(np.array(self.policy_mapping)))
+        
+        if not all_policies_there:
+            print(f'WARNING: Main configuration suggests that there are {len(np.unique(self.policy_mapping))} ' \
+                f'total policies, but recieved policy configuration has {len(policies_config)} policies. ' \
+                    'This mismatch should only be the case if self-play is being conducted.')
+        
         self.policy_agent_indexes = self.generate_policy_agent_indexes(
-            n_envs=train_env_config.num_vec_envs, policy_mapping=self.policy_mapping
+            n_envs=self.vec_envs, policy_mapping=self.policy_mapping
         )
         self.callbacks = callbacks
 
@@ -116,7 +125,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         # this is a wrapper class, so it will not hold any states like
         # buffer_size, or action_noise. pass those straight to DQN.
 
-        self.policies = []
+        self.policies = {}
         self._policies_config = deepcopy(policies_config)
         
         for polid, policy_config in self._policies_config.items():
@@ -143,9 +152,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
                     **policy_config
                 )
 
-            self.policies.append(
-                policy
-            )
+            self.policies[polid] = policy
 
         self.num_policies = len(self.policies)
 
@@ -165,7 +172,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
 
         target: collect rollbacks and train up till total_timesteps.
         """
-        print(f'NOTE: TOTAL TIMESTEPS {total_timesteps} INCLUDES NUMBER OF AGENT * VEC ENVIRONMENTS (currently {self.num_vec_envs}), AND IS NOT A PER-ENV BASIS')
+        print(f'NOTE: TOTAL TIMESTEPS {total_timesteps} INCLUDES NUMBER OF AGENT * VEC ENVIRONMENTS (currently {self.total_envs}), AND IS NOT A PER-ENV BASIS')
         if callbacks is not None:
             assert len(callbacks) == self.num_policies, 'callbacks must a list of num_policies number of nested lists'
             
@@ -182,7 +189,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
 
         # Setup for each policy. Reset things, setup timestep tracking things.
         # replace certain agent attributes
-        for polid, policy in enumerate(self.policies):
+        for polid, policy in self.policies.items():
             policy.start_time = time.time()
             if policy.ep_info_buffer is None or reset_num_timesteps:
                 policy.ep_info_buffer = deque(maxlen=policy._stats_window_size)
@@ -224,7 +231,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         last_obs = self.env.reset()
         last_obs_buffer = None
 
-        n_rollout_steps = self.n_steps * self.num_vec_envs
+        n_rollout_steps = self.n_steps * self.total_envs
         
         while self.num_timesteps < total_timesteps:
             # environment sampling. has to be done in this particular way because of
@@ -243,7 +250,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
             self.num_timesteps += rollout_timesteps
 
             # agent training.
-            for polid, policy in enumerate(self.policies):
+            for polid, policy in self.policies.items():
                 policy._update_current_progress_remaining(
                     policy.num_timesteps, total_timesteps  # 
                 )
@@ -322,8 +329,12 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         total_rewards = [[] for _ in range(self.num_policies)] 
         
         n_steps = 0
-        # before formatted, last_obs is the direct return of self.env.reset()
-        step_actions = np.empty(self.num_vec_envs, dtype=np.int64)
+        # # before formatted, last_obs is the direct return of self.env.reset()
+        # print('ACTION SPACE')
+        # print([policy.action_space for polid, policy in self.policies.items()])
+        # print(len(self.policies) * self.vec_envs)
+        step_actions = np.zeros(self.total_envs, dtype=np.int64)
+        # step_actions = np.empty(len(self.policies) * self.vec_envs, dtype=np.int64)
 
         if last_obs_buffer is None:
             last_obs_buffer = self.format_env_returns(last_obs, self.policy_agent_indexes, to_tensor=False)
@@ -331,7 +342,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
 
         # iterate over policies, and do pre-rollout setups.
         # start = time.time()
-        for polid, (policy, policy_index) in enumerate(zip(self.policies, self.policy_agent_indexes)):
+        for polid, ((_, policy), policy_index) in enumerate(zip(self.policies.items(), self.policy_agent_indexes)):
             num_envs = len(policy_index)
             policy.policy.set_training_mode(False)
             policy.n_steps = 0
@@ -351,7 +362,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         # do rollout
         while n_steps < n_rollout_steps:
             with torch.no_grad():
-                for polid, policy in enumerate(self.policies):
+                for polid, policy in self.policies.items():
                     if 'action_masks' not in inspect.signature(policy.policy.forward).parameters:
                         (
                             all_actions[polid],
@@ -359,7 +370,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
                             all_log_probs[polid],
                         ) = policy.policy.forward(last_obs[polid])
                     else:
-                        action_masks = self.get_action_masks(last_obs[polid])
+                        action_masks = policy.get_action_masks(last_obs[polid])
                         all_action_masks[polid] = action_masks
                         # print('action_masks', action_masks)
                         (
@@ -382,28 +393,24 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
                         clipped_actions = np.array(
                             [action.item() for action in clipped_actions]
                         )
-                    # reshape the clipped actions
                     all_clipped_actions[polid] = clipped_actions
-                # print('------------POLICY FORWARD TIME-------------')
-                # print(time.time() - start)
             
-            for polid, policy_agent_index in enumerate(self.policy_agent_indexes):
-                step_actions[policy_agent_index] = all_clipped_actions[polid]
+            # TODO: SETTLE HOW WE PASS TO STEP
+            for polid, actions in enumerate(all_clipped_actions):
+                policy_agent_index = self.policy_agent_indexes[polid]
+                step_actions[policy_agent_index] = actions
 
-            # start = time.time()
             # actually step in the environment
             obs, rewards, dones, infos = self.env.step(step_actions)
-            # print('obs', obs.shape)
 
-            # print('policy_agent_indexes', policy_agent_indexes)
             all_curr_obs = self.format_env_returns(obs, policy_agent_indexes=self.policy_agent_indexes, to_tensor=True, device=self.policies[0].device)
             all_curr_obs_buffer = self.format_env_returns(obs, policy_agent_indexes=self.policy_agent_indexes, to_tensor=False)
             all_rewards = self.format_env_returns(rewards, policy_agent_indexes=self.policy_agent_indexes, to_tensor=False)
             all_dones = self.format_env_returns(dones, policy_agent_indexes=self.policy_agent_indexes, to_tensor=False)
             all_infos = self.format_env_returns(infos, policy_agent_indexes=self.policy_agent_indexes, to_tensor=False)
 
-            for policy in self.policies:
-                policy.n_steps += self.num_vec_envs
+            for polid, policy in self.policies.items():
+                policy.n_steps += self.total_envs
 
             [callback.update_locals(locals()) for callback in callbacks]
             [callback.on_step() for callback in callbacks]
@@ -412,10 +419,10 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
             if not thing:  # early stopping from StopTrainingOnNoModelImprovement
                 continue_training = False
 
-            n_steps += self.num_vec_envs
+            n_steps += self.total_envs
             # start = time.time()
             # add data to the rollout buffers
-            for polid, policy in enumerate(self.policies):
+            for polid, policy in self.policies.items():
                 policy._update_info_buffer(all_infos[polid])
                 if isinstance(self.action_space, Discrete):
                     all_actions[polid] = all_actions[polid].reshape(-1, 1)
@@ -464,7 +471,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
             # Compute value for the last timestep
             # Masking is not needed here, the choice of action doesn't matter.
             # We only want the value of the current observation.
-            for polid, policy in enumerate(self.policies):
+            for polid, policy in self.policies.items():
                 values = policy.policy.predict_values(last_obs[polid])  # type: ignore[arg-type]
                 policy.rollout_buffer.compute_returns_and_advantage(last_values=values, dones=all_last_episode_starts[polid])
 
@@ -513,95 +520,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         callback.init_callback(self)
         return callback
 
-    def get_action_masks(self, observation):
-        """
-        action indexes:
-        0 - move forward
-        1 - move backward
-        2 - turn left
-        3 - turn right
-        4 - stationary
-
-        if agent is facing right:
-        ACTION SPACE (absolute viewpoint as north 0) -> AGENT POV
-        0 -> 2  'to move cardinal forward, agent must turn left'
-        1 -> 3  'to move cardinal backward, agent must turn right'
-        2 -> 1  'to move (turn) cardinal left, agent must move backwards'
-        3 -> 0  'to move (turn) cardinal right, agent must move forward'
-
-        if agent is facing left:
-        0 -> 3
-        1 -> 2
-        2 -> 0
-        3 -> 1
-
-        if agent is facing up:
-        # everything is normal
-
-        if agent is facing down:
-        0 -> 1
-        1 -> 0
-        2 -> 3
-        3 -> 2
-
-        observation bit indexes:
-        Value of last 2 bits (tile & 0b11)	Meaning
-        0	No vision
-        1	Empty tile
-        2	Recon (1 point)
-        3	Mission (5 points)
-        Bit index (least significant bit lowest)	Tile contains a...
-        2	Scout
-        3	Guard
-        # the following are WITH RESPECT TO AGENT POV, NOT THE ABSOLUTE VIEW
-        4	Right wall -> index 3 of bit split
-        5	Bottom wall -> index 2 of bit split
-        6	Left wall -> index 1 of bit split
-        7	Top wall -> index 0 of bit split
-
-        direction of facing:
-        0 - right
-        1 - bottom
-        2 - left
-        3 - top
-
-        """
-        viewcone = observation['viewcone']
-        if not self.action_masking:
-            print('this should not be running if you are doing action masking')
-            return np.ones((viewcone.shape[0], self.action_space.n))
-
-        # will fail for the case of normal obs for now
-        action_masks = np.zeros((viewcone.shape[0], self.action_space.n))
-        test = rearrange(viewcone, 'A (S R C B) -> A S B R C', B=8, R=7, C=5)
-        test = test[:, -1, :, :, :]
-
-        # 1. Disable the corresponding action if there is a wall there.
-        # step a: Rearrange the order of directions to fit action space order
-        curr_tile_walls = test[:, :4, 2, 2]
-        ### IN HERE, LETS SAY YOU GET [0, 0, 1, 1]. This translates to 
-        # [0, 0, 1, 1, 0, 1, 0, 0]
-        # left of the agent, behind the agent, right of the agent, forward of agent. AGENT POV
-        # i,e top and right of agent have a wall. why did ryan make it this way???
-        # anyways lbrf -> fblr
-        action_wall_indexes = np.array([3, 1, 0, 2])  # i.e index 3 of wall obs (top wall) maps to index 0 of which 
-        # action is influenced by its presence
-        enabled_actions = np.where(curr_tile_walls == 1, 0, 1)
-        enabled_actions = enabled_actions[:, action_wall_indexes]
-        # now that we've permuted from obs to action arrangement, permute according to
-        # to agent's facing direction.
-
-       
-        # do other stuff like masking for scout if need to. later compile all information
-        # to build this action mask. for now its just wall-enabled actions
-        action_masks[:, :4] = enabled_actions
-
-        # 0: only enable stationary action if all of them are disabled.
-        null_action_rows = np.all(action_masks == 0, axis=1)
-        action_masks[null_action_rows, -1] = 1
-
-        return action_masks
-
+    
     @staticmethod
     def format_env_returns(
         env_returns: dict[str, np.ndarray] | np.ndarray | list[dict],
@@ -786,7 +705,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
 
     def get_policy_agent_indexes_from_scout(self, last_obs):
         """
-        Helper func to decode which indexes of observations of shape (self.num_vec_envs * self.num_agents, ...)
+        Helper func to decode which indexes of observations of shape (self.total_envs * self.num_agents, ...)
         map to which policies.
         """
         policy_mapping = last_obs['scout']

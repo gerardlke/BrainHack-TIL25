@@ -12,7 +12,7 @@ from pathlib import Path
 from copy import deepcopy
 # the 3 components we will use
 from trainer import RLRolloutSimulator
-from stablebaselines_gridworld import build_env
+from self_play_env import build_env
 from custom_eval_callback import CustomEvalCallback
 
 from enum import StrEnum, auto
@@ -175,14 +175,23 @@ class CustomTrainer(tune.Trainable):
         _, train_env = build_env(
             reward_names=CustomRewardNames,
             rewards_dict=REWARDS_DICT,
-            **train_env_config
+            policy_mapping=base_config.policy_mapping,
+            agent_roles=base_config.agent_roles,
+            self_play=base_config.self_play,
+            npcs=base_config.get('npcs', None),
+            db_path=base_config.get('db_path', None),
+            env_config=train_env_config,
         )
-        # eval_env_config['collisions'] = False
-        # eval_env_config['eval'] = False
+
         _, eval_env = build_env(
             reward_names=CustomRewardNames,
             rewards_dict=STD_REWARDS_DICT,
-            **eval_env_config
+            policy_mapping=base_config.policy_mapping,
+            agent_roles=base_config.agent_roles,
+            self_play=base_config.self_play,
+            npcs=base_config.get('npcs', None),
+            db_path=base_config.get('db_path', None),
+            env_config=eval_env_config,
         )
 
         self.agent_roles = list(base_config.agent_roles)
@@ -243,7 +252,7 @@ class CustomTrainer(tune.Trainable):
         self.eval_callback = eval_callback
         
 
-    def step(self):  # This is called iteratively.
+    def step(self):
         self.simulator.learn(
             total_timesteps=self.total_timesteps,
             callbacks=self.callbacks,
