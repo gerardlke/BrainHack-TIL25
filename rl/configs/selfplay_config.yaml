@@ -3,7 +3,7 @@
 env:
   train:
     # rewards:
-    num_vec_envs: 2
+    num_vec_envs: 1
     binary: True
     novice: True
     num_iters: 100
@@ -59,8 +59,8 @@ policies:
 agent_roles: [0, 1, 2, 3]
 policy_mapping: [0, 1, 2, 3]  # currently only works for
 # 4 unique policies.
-self_play: False
-db_path: somewhere
+self_play: True
+db_path: somewhere.db
 
 train:
   n_steps: 100

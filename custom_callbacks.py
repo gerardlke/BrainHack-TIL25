@@ -10,9 +10,11 @@ import numpy as np
 from einops import rearrange
 from stable_baselines3.common.logger import Logger
 from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, sync_envs_normalization
-from stable_baselines3.common.callbacks import EventCallback, BaseCallback
+from stable_baselines3.common.callbacks import EventCallback, BaseCallback, CheckpointCallback
 from collections import defaultdict
 from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, VecMonitor, is_vecenv_wrapped
+
+from rl.db.db import RL_DB
 
 
 class CustomEvalCallback(EventCallback):
@@ -168,7 +170,7 @@ class CustomEvalCallback(EventCallback):
 
     def _on_step(self) -> bool:
         continue_training = True
-
+        score = None
         if self.eval_freq > 0 and self.n_calls % self.eval_freq == 0:
             # Sync training and eval env if there is VecNormalize
             if self.model.get_vec_normalize_env() is not None:
@@ -243,6 +245,7 @@ class CustomEvalCallback(EventCallback):
             
             # TODO: save each policy based on its own best reward, not jointly.
             mean_policy_reward = np.mean(policy_episode_rewards)
+            score = mean_policy_reward
             self.last_mean_reward = float(mean_policy_reward)
 
             if len(self._is_success_buffer) > 0:
@@ -269,7 +272,7 @@ class CustomEvalCallback(EventCallback):
             if self.callback is not None:
                 continue_training = continue_training and self._on_event()
 
-        return continue_training
+        return continue_training, score
 
     def update_child_locals(self, locals_: dict[str, Any]) -> None:
         """
@@ -621,3 +624,66 @@ class CustomEvalCallback(EventCallback):
             return episode_rewards, episode_lengths
         return mean_reward, std_reward
 
+class CustomCheckpointCallback(CheckpointCallback):
+    """
+    Inherit from CheckpointCallback, but custom it to call our DB module.
+    This is easiest since here is where we define checkpoint paths.
+    """
+    def __init__(self, polid, db_path, **kwargs):
+        super().__init__(**kwargs)
+        self.db_path = db_path
+        self.db = RL_DB(self.db_path)
+        self.polid = polid
+        self.save_path = os.path.join(self.save_path, f"polid_{self.polid}")
+
+    def on_step(self, hparams, score) -> bool:
+        """
+        This method will be called by the model after each call to ``env.step()``.
+
+        For child callback (of an ``EventCallback``), this will be called
+        when the event is triggered.
+
+        :return: If the callback returns False, training is aborted early.
+        """
+        self.n_calls += 1
+        self.num_timesteps = self.model.num_timesteps
+
+        return self._on_step(hparams, score)
+
+    def _on_step(self, hparams, score) -> bool:
+        if self.n_calls % self.save_freq == 0:
+            if score is None:
+                score = 0
+            model_path = self._checkpoint_path(extension="zip")
+            self.model.save(model_path)
+            # here, try to instantiate a db connection.
+            self.db.set_up_db(timeout=100)
+            checkpoints = [
+                {
+                    'filepath': model_path,
+                    'policy_id': self.polid,
+                    'hyperparamters': hparams,
+                    'score': score, 
+                }
+            ]
+            self.db.add_checkpoints(checkpoints=checkpoints)
+            self.db.shut_down_db()  # release lock for other checkpointers
+
+            if self.verbose >= 2:
+                print(f"Saving model checkpoint to {model_path}")
+
+            if self.save_replay_buffer and hasattr(self.model, "replay_buffer") and self.model.replay_buffer is not None:
+                # If model has a replay buffer, save it too
+                replay_buffer_path = self._checkpoint_path("replay_buffer_", extension="pkl")
+                self.model.save_replay_buffer(replay_buffer_path)  # type: ignore[attr-defined]
+                if self.verbose > 1:
+                    print(f"Saving model replay buffer checkpoint to {replay_buffer_path}")
+
+            if self.save_vecnormalize and self.model.get_vec_normalize_env() is not None:
+                # Save the VecNormalize statistics
+                vec_normalize_path = self._checkpoint_path("vecnormalize_", extension="pkl")
+                self.model.get_vec_normalize_env().save(vec_normalize_path)  # type: ignore[union-attr]
+                if self.verbose >= 2:
+                    print(f"Saving model VecNormalize to {vec_normalize_path}")
+
+        return True

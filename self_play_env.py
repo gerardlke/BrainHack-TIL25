@@ -12,7 +12,9 @@ import time
 import gymnasium
 import numpy as np
 import pygame
+import inspect
 
+from rl.db.db import RL_DB
 from copy import deepcopy
 from functools import partial
 from pettingzoo.utils.conversions import aec_to_parallel
@@ -67,6 +69,7 @@ def build_env(
     npcs,
     db_path,
     env_config,
+    num_iters=100,
     env_wrappers: list[BaseWrapper] | None = None,
 ):
     """
@@ -111,6 +114,7 @@ def build_env(
         binary=binary,
         viewcone_only=viewcone_only,
         collisions=collisions,
+        num_iters=num_iters
         # **_env_config
     )
 
@@ -138,35 +142,6 @@ def build_env(
     env = ss.concat_vec_envs_v1(env, num_vec_envs=num_vec_envs, num_cpus=4, base_class='stable_baselines3')
 
     return orig_env, env
-
-
-def aec_to_selfplayparallel(
-    aec_env: AECEnv[AgentID, ObsType, ActionType],
-    policy_mapping,
-    agent_roles,
-    npcs,
-    opponent_sampling,
-    db_path,
-) -> ParallelEnv[AgentID, ObsType, ActionType]:
-    """Converts an AEC environment to a Parallel environment.
-
-    In the case of an existing Parallel environment wrapped using a `parallel_to_aec_wrapper`, this function will return the original Parallel environment.
-    Otherwise, it will apply the `aec_to_parallel_wrapper` to convert the environment.
-    """
-    if isinstance(aec_env, OrderEnforcingWrapper) and isinstance(
-        aec_env.env, parallel_to_aec_wrapper
-    ):
-        return aec_env.env.env
-    else:
-        par_env = SelfPlayWrapper(
-            aec_env,
-            policy_mapping=policy_mapping,
-            agent_roles=agent_roles,
-            npcs=npcs,
-            opponent_sampling=opponent_sampling,
-            db_path=db_path
-        )
-        return par_env
 
 
 class SelfPlayWrapper(aec_to_parallel_wrapper):
@@ -202,6 +177,9 @@ class SelfPlayWrapper(aec_to_parallel_wrapper):
     def __init__(self, env, policy_mapping, agent_roles, npcs, opponent_sampling, db_path):
         super().__init__(env)
         self.db_path = db_path
+        # db interface (gerard)
+        self.db = RL_DB(db_file=self.db_path)
+
         self.policy_mapping = policy_mapping
         self.agent_roles = agent_roles
         self.opponent_sampling = opponent_sampling
@@ -223,12 +201,21 @@ class SelfPlayWrapper(aec_to_parallel_wrapper):
 
     def load_policies(self):
         # arbitrary load checkpoint for each agent function
+        self.db.set_up_db(timeout=100)
+        checkpoints = [
+            self.db.get_checkpoint_by_policy(policy) for policy in self.environment_policies
+        ]
+        
         self.loaded_policies = {
-            k: self.load_policy(k) for k in self.environment_policies
+            policy: self.load_policy(c) for c, policy in zip(checkpoints, self.environment_policies)
         }
 
-    def load_policy(self, agent_idx):
-        return 'example_policy_here'
+    def load_policy(self, path=None):
+        if path is None:
+            # if no checkpoint, default to random behaviour.
+            return 'random'
+        else:
+            return 'example_policy_here'
 
     def reset(self, seed: int | None=None, options: dict | None=None):  # type: ignore
         """
@@ -252,9 +239,21 @@ class SelfPlayWrapper(aec_to_parallel_wrapper):
         actions are a dict of agent names to their actions. Since this is nested within the vectorized wrapper,
         expect exactly what the base environment's action space tells us, without worrying about batches etc.
         """
-        for agent, action in actions.items():
+        for agent in actions:
             if agent in self.environment_agents:
                 policy_to_run = self.agent_policy_mapping[agent]
+                loaded_policy = self.loaded_policies[policy_to_run]
+                if loaded_policy == 'random':
+                    action = np.random.randint(0, 5)
+                else:
+                    obs = self.aec_env.observe(agent)
+                    if 'action_masks' not in inspect.signature(loaded_policy.forward).parameters:
+                        action, _, _ = loaded_policy.forward(obs)
+                    else:
+                        action_masks = loaded_policy.get_action_masks(obs)
+                        action, _, _ = loaded_policy.forward(obs, action_masks=action_masks)
+
+                actions[agent] = action
 
         return super().step(actions)
 
@@ -276,7 +275,7 @@ class modified_env(raw_env):
             reward_names,
             rewards_dict,
             binary,
-            num_iters=1000,
+            num_iters=100,
             eval=False, 
             collisions=True,
             viewcone_only=False,
@@ -386,7 +385,7 @@ class modified_env(raw_env):
             x_lim = int(self.window_size * 1.47)
             for agent in self.agents:
                 agent_id = int(agent[-1])
-                observation = self.observe(agent)
+                observation = self.observe(agent, default_return=True)
 
                 y_corner = int(self.window_size * (0.24 * agent_id + 0.04))
 
@@ -765,7 +764,7 @@ class modified_env(raw_env):
                 ))
                 # gsdfSGdFGF
 
-    def observe(self, agent):
+    def observe(self, agent, default_return=False):
         """
         Returns the observation of the specified agent.
         """
@@ -800,24 +799,25 @@ class modified_env(raw_env):
                     else np.uint8(Player.GUARD.power)
                 )
 
-        if self.binary:
+        if self.binary and not default_return:
             view = np.unpackbits(view.astype(np.uint8))  # made R C B into (R C B).
             # because stacking does not accept 3-D box, we flatten it by default.
 
-        if self.viewcone_only:
+        if self.viewcone_only and not default_return:
             to_return =  {
                 "viewcone": view,
                 }
+        else:
+            to_return = {
+                "viewcone": view,
+                "direction": self.agent_directions[agent],
+                "location": self.agent_locations[agent],
+                "scout": 1 if agent == self.scout else 0,
+                "step": self.num_moves,
+            }
 
-        to_return = {
-            "viewcone": view,
-            "direction": self.agent_directions[agent],
-            "location": self.agent_locations[agent],
-            "scout": 1 if agent == self.scout else 0,
-            "step": self.num_moves,
-        }
-
-        to_return = self.alter_obs(to_return)
+        if not default_return:
+            to_return = self.alter_obs(to_return)
 
         return to_return
     

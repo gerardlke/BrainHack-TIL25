@@ -244,7 +244,6 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
                 eval_callback=eval_callback,
                 last_obs_buffer=last_obs_buffer,
             )
-
             if not continue_training:
                 break  # early stopping
             self.num_timesteps += rollout_timesteps
@@ -315,6 +314,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         
         """
         # temporary lists to hold things before saved into history_buffer of agent.
+        print('----------------NUM POL', self.num_policies)
         continue_training = True
         all_last_episode_starts = [None] * self.num_policies
         all_clipped_actions = [None] * self.num_policies
@@ -329,19 +329,13 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         total_rewards = [[] for _ in range(self.num_policies)] 
         
         n_steps = 0
-        # # before formatted, last_obs is the direct return of self.env.reset()
-        # print('ACTION SPACE')
-        # print([policy.action_space for polid, policy in self.policies.items()])
-        # print(len(self.policies) * self.vec_envs)
         step_actions = np.zeros(self.total_envs, dtype=np.int64)
-        # step_actions = np.empty(len(self.policies) * self.vec_envs, dtype=np.int64)
 
         if last_obs_buffer is None:
             last_obs_buffer = self.format_env_returns(last_obs, self.policy_agent_indexes, to_tensor=False)
             last_obs = self.format_env_returns(last_obs, self.policy_agent_indexes, device=self.policies[0].device, to_tensor=True)
 
         # iterate over policies, and do pre-rollout setups.
-        # start = time.time()
         for polid, ((_, policy), policy_index) in enumerate(zip(self.policies.items(), self.policy_agent_indexes)):
             num_envs = len(policy_index)
             policy.policy.set_training_mode(False)
@@ -355,8 +349,6 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
             eval_callback.on_rollout_start()
             policy._last_episode_starts = np.ones((num_envs,), dtype=bool)
             all_last_episode_starts[polid] = policy._last_episode_starts
-        # print('------------PRE ROLLOUT TIME-------------')
-        # print(time.time() - start)
 
 
         # do rollout
@@ -413,9 +405,16 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
                 policy.n_steps += self.total_envs
 
             [callback.update_locals(locals()) for callback in callbacks]
-            [callback.on_step() for callback in callbacks]
+            # this will break if you pass in any other callback or make this into a CallbackList
+            # TODO: dont be lazy.
+            
             eval_callback.update_locals(locals())
-            thing = eval_callback.on_step()
+            thing, score = eval_callback.on_step()
+            [
+                callback.on_step(
+                    hparams=self._policies_config[polid],
+                    score=score,
+            ) for polid, callback in enumerate(callbacks)]
             if not thing:  # early stopping from StopTrainingOnNoModelImprovement
                 continue_training = False
 
@@ -447,21 +446,10 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
                         log_prob=deepcopy(all_log_probs[polid]),
                         action_masks=deepcopy(all_action_masks[polid])
                     )
-                # thing = dict(
-                #         obs=deepcopy(last_obs_buffer[polid]),
-                #         action=deepcopy(all_actions[polid]),
-                #         reward=deepcopy(all_rewards[polid]),
-                #         episode_start=deepcopy(policy._last_episode_starts),
-                #         value=deepcopy(all_values[polid]),
-                #         log_prob=deepcopy(all_log_probs[polid]),
-                #         action_masks=deepcopy(all_action_masks[polid])
-                #     )
-                # print('wacky dict', thing)
+                total_rewards[polid].append(all_rewards[polid])
                 policy._last_obs = all_curr_obs_buffer[polid]
                 policy._last_episode_starts = all_dones[polid]
-                total_rewards[polid].append(all_rewards[polid])
-            # print('------------BUFFER ADDED TIME-------------')
-            # print(time.time() - start)
+
 
             last_obs = all_curr_obs
             last_obs_buffer = all_curr_obs_buffer  # APPARENTLY I WAS JUST ADDING THE SAME OBSERVATION AGAIN AND AGAIN NO WONDER CCB
@@ -714,40 +702,3 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
             policy_agent_indexes[polid] = np.where(policy_mapping == polid)[0]
 
         return policy_agent_indexes
-
-    @staticmethod
-    def get_scout_from_obs(observation, already_bits=False, is_flattened=True, frame_stack_dim=0):
-        """
-        Overall handler function to do everything for us.
-        Observation may be a dictionary or simple numpy array.
-        It may be frame-stacked. It may also have been vectorized.
-        Whatever way it is, we will rearrange it into an N, (C R B) array, where C R B values are hardcoded.
-        """
-
-        if isinstance(observation, dict):
-            if 'scout' in observation:
-                print('SCOUT IN OBS????', observation['scout'])
-                eghtyjreg
-            else:
-                observation = observation['viewcone']
-
-        if is_flattened:  # have to rely on user given frame_stack_dim to know along which dim was stacked
-            if frame_stack_dim == -1:
-                observation = rearrange(observation,
-                    '(C R B N) -> (N C R B)',
-                R=5, C=7, B=8)
-
-
-        # we expect by this point, some (N, ...) array. the next code will flatten it into
-        if not already_bits:
-            observation = np.unpackbits(observation.astype(np.uint8))
-
-        # by this point, we expect it to be a 
-        print('observation before binary_obs', observation, observation.shape)
-        binary_obs = rearrange(observation, 
-            '(N C R B) -> N B C R', 
-            R=5, C=7, B=8)
-        is_scout = binary_obs[0, 5, 2, 2]
-
-        return is_scout
-    

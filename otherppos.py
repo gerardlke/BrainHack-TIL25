@@ -15,6 +15,9 @@ from stable_baselines3.common.utils import explained_variance, get_schedule_fn, 
 from stable_baselines3.ppo import PPO
 from sb3_contrib.ppo_mask.ppo_mask import MaskablePPO
 
+from stable_baselines3.common.callbacks import BaseCallback, CallbackList, ConvertCallback, ProgressBarCallback
+
+
 SelfPPO = TypeVar("SelfPPO", bound="PPO")
 
 
@@ -56,6 +59,33 @@ class ModifiedPPO(PPO):
     
     
 class ModifiedMaskedPPO(MaskablePPO):
+
+    def _init_callback(
+        self,
+        callback: MaybeCallback,
+        progress_bar: bool = False,
+    ) -> BaseCallback:
+        """
+        :param callback: Callback(s) called at every step with state of the algorithm.
+        :param progress_bar: Display a progress bar using tqdm and rich.
+        :return: A hybrid callback calling `callback` and performing evaluation.
+        """
+        print('callback before init', callback)
+        # Convert a list of callbacks into a callback
+        if isinstance(callback, list):
+            callback = CallbackList(callback)
+
+        # Convert functional callback to object
+        if not isinstance(callback, BaseCallback):
+            callback = ConvertCallback(callback)
+
+        # Add progress bar callback
+        if progress_bar:
+            callback = CallbackList([callback, ProgressBarCallback()])
+
+        callback.init_callback(self)
+        print('callback after init', callback)
+        return callback
 
     def get_action_masks(self, observation):
         """

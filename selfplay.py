@@ -13,7 +13,7 @@ from copy import deepcopy
 # the 3 components we will use
 from selfplay_trainer import RLRolloutSimulator
 from self_play_env import build_env
-from custom_eval_callback import CustomEvalCallback
+from custom_callbacks import CustomEvalCallback, CustomCheckpointCallback
 
 from enum import StrEnum, auto
 from stable_baselines3.common.callbacks import (
@@ -25,6 +25,8 @@ from stable_baselines3.common.callbacks import (
     StopTrainingOnNoModelImprovement,
 )
 from ray.tune.schedulers import PopulationBasedTraining
+
+from rl.db.db import RL_DB
 
 """
 TODO additional after baseline pipeline is established:
@@ -298,6 +300,7 @@ def create_trainable():
                 npcs=base_config.npcs,
                 db_path=base_config.db_path,
                 env_config=train_env_config,
+                num_iters=train_env_config.num_iters,
             )
 
             _, eval_env = build_env(
@@ -309,6 +312,7 @@ def create_trainable():
                 npcs=base_config.npcs,
                 db_path=base_config.db_path,
                 env_config=eval_env_config,
+                num_iters=train_env_config.num_iters,
             )
 
             self.agent_roles = list(base_config.agent_roles)
@@ -336,11 +340,13 @@ def create_trainable():
             training_config.eval_freq = eval_freq
 
             checkpoint_callbacks = [
-                CheckpointCallback(
+                CustomCheckpointCallback(
                     save_freq=eval_freq,
-                    save_path=f"{self.root_dir}/checkpoints/{trial_code}/{trial_name}/polid_{policy}",
+                    polid=polid,
+                    db_path=base_config.db_path,
+                    save_path=f"{self.root_dir}/checkpoints/{trial_code}/{trial_name}",
                     name_prefix=f"{self.experiment_name}"
-                ) for policy in range(num_policies)
+                ) for polid in range(num_policies)
             ]
             no_improvement = StopTrainingOnNoModelImprovement(
                 max_no_improvement_evals=training_config.no_improvement,

@@ -20,9 +20,9 @@ class RL_DB:
         self.db_file = db_file
         self.table_name = table_name 
 
-    def set_up_db(self):
+    def set_up_db(self, timeout=100):
         """Sets up the database instance within class attributes."""
-        self.create_connection()
+        self.create_connection(timeout=timeout)
         self.create_table()
 
     def shut_down_db(self):
@@ -48,10 +48,11 @@ class RL_DB:
 
     # Database connections
 
-    def create_connection(self):
+    def create_connection(self, timeout=100):
         """Establishes a connection to a SQLite database file and creates the file if it doesn't exist."""
+        print('Attempting to connect to sqlite with timeout', timeout)
         try:
-            self.connection = sqlite3.connect(self.db_file)
+            self.connection = sqlite3.connect(self.db_file, timeout=timeout)
             self.connection.row_factory = sqlite3.Row  # Set row_factory to sqlite3.Row for dictionary-like access to rows
             print(f"Connection to SQLite database '{self.db_file}' successful")
         except Error as err:
@@ -68,6 +69,7 @@ class RL_DB:
             self.connection.commit()
             return cursor.lastrowid # Return the ID of the last inserted row
         except Error as e:
+            raise e
             print(f"Error executing query: '{e}'")
             return None
 
@@ -96,13 +98,14 @@ class RL_DB:
             timestamp DATETIME NOT NULL,
             policy_id INTEGER NOT NULL,
             hyperparameters JSON,
-            score REAL NOT NULL,
-            best_opponents TEXT
+            score REAL NOT NULL
         );
         """
         res = self.execute_query(query)
         if res is not None:
             print(f'Table {self.table_name} set up successfully.')
+        else:
+            print('Failure to create table. Please debug.')
 
     def add_checkpoints(self, checkpoints):
         """Adds multiple checkpoints into checkpoints table."""  # TODO: Can choose to optimise to instantaneous batch insertion 
@@ -112,20 +115,20 @@ class RL_DB:
                 policy_id=checkpoint.get('policy_id'),
                 hyperparameters=checkpoint.get('hyperparameters'),
                 score=checkpoint.get('score'),
-                best_opponents=checkpoint.get('best_opponents')
+                # best_opponents=checkpoint.get('best_opponents')
             )
 
-    def add_checkpoint(self, filepath='', policy_id=0, hyperparameters={}, score=0.0, best_opponents=''):  # TODO: Add in all fields once table fields are finalised
+    def add_checkpoint(self, filepath='', policy_id=0, hyperparameters={}, score=0.0):  # TODO: Add in all fields once table fields are finalised
         """Adds a new checkpoint to the checkpoints table."""
         query = f"""
         INSERT INTO {DB_TABLE} (
-            filepath, timestamp, policy_id, hyperparameters, score, best_opponents
+            filepath, timestamp, policy_id, hyperparameters, score
         )
-        VALUES (?, ?, ?, ?, ?, ?);
+        VALUES (?, ?, ?, ?, ?);
         """
-        last_id = self.execute_query(query, (filepath, datetime.now().isoformat(), policy_id, json.dumps(hyperparameters), score, best_opponents))
+        last_id = self.execute_query(query, (filepath, datetime.now().isoformat(), policy_id, json.dumps(hyperparameters), score))
         if last_id is not None:
-            print(f"Added checkpoint: ({filepath}, {policy_id}, {hyperparameters}, {score}, {best_opponents})")
+            print(f"Added checkpoint: ({filepath}, {policy_id}, {hyperparameters}, {score})")
         
     def delete_all_checkpoints(self):
         """Deletes all checkpoints from the table."""
@@ -196,21 +199,21 @@ if __name__ == "__main__":
             'policy_id': 0, 
             'hyperparameters': {'a':2, 'b':1},
             'score': 0.5,
-            'best_opponents': 'ship'
+            # 'best_opponents': 'ship'
         },
         {
             'filepath': 'file2.pth',
             'policy_id': 0, 
             'hyperparameters': {'a':1, 'b': 2},
             'score': 0.6,
-            'best_opponents': 'idk'
+            # 'best_opponents': 'idk'
         },
         {
             'filepath': 'file3.pth',
             'policy_id': 1, 
             'hyperparameters': {'a':1, 'b': 3},
             'score': 0.5,
-            'best_opponents': 'um'
+            # 'best_opponents': 'um'
         },
     ]
     db.add_checkpoints(sample_data)

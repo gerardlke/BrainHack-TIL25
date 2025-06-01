@@ -13,7 +13,7 @@ from copy import deepcopy
 # the 3 components we will use
 from trainer import RLRolloutSimulator
 from self_play_env import build_env
-from custom_eval_callback import CustomEvalCallback
+from custom_callbacks import CustomEvalCallback
 
 from enum import StrEnum, auto
 from stable_baselines3.common.callbacks import (
@@ -181,6 +181,7 @@ class CustomTrainer(tune.Trainable):
             npcs=base_config.get('npcs', None),
             db_path=base_config.get('db_path', None),
             env_config=train_env_config,
+            num_iters=train_env_config.num_iters,
         )
 
         _, eval_env = build_env(
@@ -192,6 +193,7 @@ class CustomTrainer(tune.Trainable):
             npcs=base_config.get('npcs', None),
             db_path=base_config.get('db_path', None),
             env_config=eval_env_config,
+            num_iters=train_env_config.num_iters,
         )
 
         self.agent_roles = list(base_config.agent_roles)
