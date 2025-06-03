@@ -171,8 +171,8 @@ class RL_DB:
 if __name__ == "__main__":
     db = RL_DB(db_file=DEFAULT_DB_FILE, table_name=DB_TABLE)
 
-    # db.set_up_db()
-    # db.drop_table()
+    db.set_up_db()
+    db.drop_table()
 
     db.set_up_db()
 
@@ -182,21 +182,18 @@ if __name__ == "__main__":
             'policy_id': 0, 
             'hyperparameters': {'a':2, 'b':1},
             'score': 0.5,
-            # 'best_opponents': 'ship'
         },
         {
             'filepath': 'file2.pth',
             'policy_id': 0, 
             'hyperparameters': {'a':1, 'b': 2},
             'score': 0.6,
-            # 'best_opponents': 'idk'
         },
         {
             'filepath': 'file3.pth',
             'policy_id': 1, 
             'hyperparameters': {'a':1, 'b': 3},
             'score': 0.5,
-            # 'best_opponents': 'um'
         },
     ]
     # db.add_checkpoints(sample_data)
