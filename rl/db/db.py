@@ -151,14 +151,15 @@ class RL_DB:
         print("No checkpoints found in the database.")
         return []
 
-    def get_checkpoint_by_policy(self, policy, shuffle=False):
+    def get_checkpoint_by_policy(self, policy, n=5, shuffle=False):
         """Retrieves single checkpoint from the checkpoints table by index, either best index or ."""
         query = f"""
         SELECT * FROM {self.table_name}
         WHERE policy_id = ?
-        ORDER BY score DESC;
+        ORDER BY score DESC
+        LIMIT ?;
         """
-        checkpoints = self.execute_query_and_return(query, (policy,))
+        checkpoints = self.execute_query_and_return(query, (policy, n))
         if checkpoints:
             if shuffle:
                 random.shuffle(checkpoints)
@@ -196,13 +197,13 @@ if __name__ == "__main__":
             'score': 0.5,
         },
     ]
-    # db.add_checkpoints(sample_data)
+    db.add_checkpoints(sample_data)
 
     checkpoints = db.get_all_checkpoints()
     for checkpoint in checkpoints:
         print('1 checkpoint', checkpoint['filepath'], checkpoint['policy_id'], checkpoint['hyperparameters'], checkpoint['score'])
 
-    checkpoints = db.get_checkpoint_by_policy(0, shuffle=False)
+    checkpoints = db.get_checkpoint_by_policy(0, n=1, shuffle=False)
     for checkpoint in checkpoints:
         print('2 checkpoint', checkpoint['filepath'], checkpoint['policy_id'], checkpoint['hyperparameters'], checkpoint['score'])
 
