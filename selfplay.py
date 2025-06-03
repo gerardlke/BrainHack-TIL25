@@ -334,9 +334,7 @@ def create_trainable():
             )
             self.total_timesteps = training_config.training_iters * train_env.num_envs
             eval_freq = int(self.total_timesteps / training_config.num_evals / train_env.num_envs)
-            print('self.total_timesteps', self.total_timesteps)
-            eval_freq = int(max(eval_freq, training_config.n_steps))
-            print('eval_freq after max', eval_freq)
+            eval_freq = int(max(eval_freq, training_config.n_steps * train_env.num_envs))
             training_config.eval_freq = eval_freq
 
             checkpoint_callbacks = [
@@ -358,7 +356,6 @@ def create_trainable():
                 verbose=1
             )
             eval_callback = CustomEvalCallback(
-                evaluate_policy='mp',
                 in_bits=True if eval_env_config.binary == 'binary' else False,  # TODO this is really bad code
                 log_path=self.eval_log_path,
                 agent_roles=self.agent_roles,

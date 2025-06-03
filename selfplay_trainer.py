@@ -113,8 +113,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
 
         self.observation_space = self.env.observation_space
         self.action_space = self.env.action_space
-        print('self.observation_space', self.observation_space)
-
+        
         self._vec_normalize_env = None
 
         self.tensorboard_log = tensorboard_log
@@ -131,25 +130,26 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         for polid, policy_config in self._policies_config.items():
             algo_type = eval(policy_config.algorithm)  # this will fail if the policy specified in the config
             # has not yet been imported. TODO do a registry if we aren't lazy?
-            del policy_config.algorithm
-            if hasattr(policy_config, 'n_steps'):
-                assert policy_config.n_steps == self.n_steps, 'Assertion failed.' \
+            _policy_config = deepcopy(policy_config)
+            del _policy_config.algorithm  # so it doesnt interfere with init
+            if hasattr(_policy_config, 'n_steps'):
+                assert _policy_config.n_steps == self.n_steps, 'Assertion failed.' \
                     f'You passed in different n_steps for polid {polid} when you '
             else:
-                policy_config.n_steps = self.n_steps
-            if hasattr(policy_config, 'path'):
+                _policy_config.n_steps = self.n_steps
+            if hasattr(_policy_config, 'path'):
                 policy = algo_type.load(
                     env = self.dummy_envs[polid],
                     tensorboard_log=self.tensorboard_log,
                     verbose=self.verbose,
-                    **policy_config
+                    **_policy_config
                 )
             else:
                 policy = algo_type(
                     env = self.dummy_envs[polid],
                     tensorboard_log=self.tensorboard_log,
                     verbose=self.verbose,
-                    **policy_config
+                    **_policy_config
                 )
 
             self.policies[polid] = policy
@@ -232,6 +232,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         last_obs_buffer = None
 
         n_rollout_steps = self.n_steps * self.total_envs
+        print('n_rollout_steps', self.n_steps, self.total_envs)
         
         while self.num_timesteps < total_timesteps:
             # environment sampling. has to be done in this particular way because of
@@ -250,6 +251,8 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
 
             # agent training.
             for polid, policy in self.policies.items():
+                print('POLID LEARNING', polid)
+                print('POLICY', policy)
                 policy._update_current_progress_remaining(
                     policy.num_timesteps, total_timesteps  # 
                 )
@@ -314,7 +317,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         
         """
         # temporary lists to hold things before saved into history_buffer of agent.
-        print('----------------NUM POL', self.num_policies)
+
         continue_training = True
         all_last_episode_starts = [None] * self.num_policies
         all_clipped_actions = [None] * self.num_policies
@@ -454,6 +457,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
             last_obs = all_curr_obs
             last_obs_buffer = all_curr_obs_buffer  # APPARENTLY I WAS JUST ADDING THE SAME OBSERVATION AGAIN AND AGAIN NO WONDER CCB
             all_last_episode_starts = all_dones
+            
 
         with torch.no_grad():
             # Compute value for the last timestep
@@ -465,7 +469,6 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
 
         [callback.on_rollout_end() for callback in callbacks]
         eval_callback.on_rollout_end()
-
         return total_rewards, n_steps, continue_training, last_obs, last_obs_buffer
 
     def load_policy_id(

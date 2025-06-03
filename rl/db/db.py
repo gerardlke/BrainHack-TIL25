@@ -15,7 +15,7 @@ DEFAULT_DB_FILE = "RL.db"
 DB_TABLE = "checkpoints"
 
 class RL_DB:
-    def __init__(self, db_file=DEFAULT_DB_FILE, table_name=DB_TABLE):
+    def __init__(self, db_file=DEFAULT_DB_FILE, table_name=DB_TABLE, verbose=False):
         self.connection = None
         self.db_file = db_file
         self.table_name = table_name 
@@ -148,7 +148,7 @@ class RL_DB:
         users = self.execute_query_and_return(query)
         if users:
             return users
-        print("\nNo checkpoints found in the database.")
+        print("No checkpoints found in the database.")
 
     def get_checkpoint_by_policy(self, policy, shuffle=False):
         """Retrieves single checkpoint from the checkpoints table by index, either best index or ."""
@@ -162,7 +162,7 @@ class RL_DB:
             if shuffle:
                 random.shuffle(checkpoints)
             return checkpoints
-        print(f"\nNo checkpoints found in the database for policy index {policy}.\n")
+        print(f"No checkpoints found in the database for policy index {policy}.")
 
     # Database saving
 
@@ -175,7 +175,7 @@ class RL_DB:
             conn = sqlite3.connect(db_file_path)
             with open(export_sql_file_path, 'w') as f:
                 for line in conn.iterdump():
-                    f.write(f'{line}\n')
+                    f.write(f'{line}')
             conn.close()
             print(f"Database '{db_file_path}' exported successfully to '{export_sql_file_path}'")
         except Error as e:

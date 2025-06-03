@@ -199,12 +199,29 @@ class SelfPlayWrapper(aec_to_parallel_wrapper):
         self.loaded_policies = None
         self.opponent_sampling = opponent_sampling
 
+        # temp hash
+        import hashlib
+        import secrets
+
+        # Generate a random 32-byte (256-bit) value
+        random_bytes = secrets.token_bytes(32)
+
+        # Hash it using SHA-256
+        random_hash = hashlib.sha256(random_bytes).hexdigest()
+
+        self.hash = random_hash
+
     def load_policies(self):
         # arbitrary load checkpoint for each agent function
         self.db.set_up_db(timeout=100)
+        print('env', self.hash, 'connected to db')
         checkpoints = [
             self.db.get_checkpoint_by_policy(policy) for policy in self.environment_policies
         ]
+        self.db.export_database_to_sql_dump(self.db_path, self.db_path)
+        print('self.db_path', self.db_path)
+
+        self.db.shut_down_db()
         
         self.loaded_policies = {
             policy: self.load_policy(c) for c, policy in zip(checkpoints, self.environment_policies)

@@ -3,13 +3,13 @@
 env:
   train:
     # rewards:
-    num_vec_envs: 1
+    num_vec_envs: 2
     binary: True
     novice: True
     num_iters: 100
     eval_mode: False
     frame_stack_size: 4
-    render_mode: 'rgb_array'
+    render_mode:
     collisions: True
     viewcone_only: False
     see_scout_reward: True
@@ -24,7 +24,7 @@ env:
     num_iters: 100
     eval_mode: True
     frame_stack_size: 4
-    render_mode: 'rgb_array'
+    render_mode:
     collisions: True
     viewcone_only: False
     see_scout_reward: True
@@ -69,7 +69,7 @@ train:
   # all runs. oh but it doesnt account for num of vector envs, we multiply that for
   # you, so if you set this to be 250000, and have 2 vec envs * 4 agents, it will be 250k * 8 = 2mil
   n_eval_episodes: 20
-  num_evals: 40
+  num_evals: 400
   root_dir: '/mnt/e/BrainHack-TIL25/results'
   experiment_name: 'masked_ppo'
   use_action_masking: True
