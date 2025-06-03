@@ -60,17 +60,17 @@ agent_roles: [0, 1, 2, 3]
 policy_mapping: [0, 1, 2, 3]  # currently only works for
 # 4 unique policies.
 self_play: True
-db_path: somewhere.db
+db_name: test.db
 
 train:
   n_steps: 100
-  training_iters: 250000  # this already accounts for n steps
+  training_iters: 250  # this already accounts for n steps
   # this is to ensure that we have the same number of TOTAL iterations, across
   # all runs. oh but it doesnt account for num of vector envs, we multiply that for
   # you, so if you set this to be 250000, and have 2 vec envs * 4 agents, it will be 250k * 8 = 2mil
-  n_eval_episodes: 20
-  num_evals: 400
-  root_dir: '/mnt/e/BrainHack-TIL25/results'
+  n_eval_episodes: 2
+  num_evals: 10
+  root_dir: '/home/jovyan/interns/ben/BrainHack-TIL25/selfplay'
   experiment_name: 'masked_ppo'
   use_action_masking: True
   no_improvement: 5
@@ -88,7 +88,7 @@ tune:
   # independent of policies
   n_steps:
     type: choice
-    choices: [512, 2048]
+    choices: [100]
   num_iters:
     type: choice
     choices: [100]

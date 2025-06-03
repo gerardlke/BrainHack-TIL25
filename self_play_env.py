@@ -13,6 +13,8 @@ import gymnasium
 import numpy as np
 import pygame
 import inspect
+import hashlib
+import secrets
 
 from rl.db.db import RL_DB
 from copy import deepcopy
@@ -199,10 +201,6 @@ class SelfPlayWrapper(aec_to_parallel_wrapper):
         self.loaded_policies = None
         self.opponent_sampling = opponent_sampling
 
-        # temp hash
-        import hashlib
-        import secrets
-
         # Generate a random 32-byte (256-bit) value
         random_bytes = secrets.token_bytes(32)
 
@@ -214,12 +212,17 @@ class SelfPlayWrapper(aec_to_parallel_wrapper):
     def load_policies(self):
         # arbitrary load checkpoint for each agent function
         self.db.set_up_db(timeout=100)
-        print('env', self.hash, 'connected to db')
+        # print('env', self.hash, 'connected to db')
         checkpoints = [
             self.db.get_checkpoint_by_policy(policy) for policy in self.environment_policies
         ]
-        self.db.export_database_to_sql_dump(self.db_path, self.db_path)
-        print('self.db_path', self.db_path)
+        # # self.db.export_database_to_sql_dump(self.db_path, self.db_path)
+        # print('self.db_path', self.db_path)
+        print('checkpoints', checkpoints)
+        test = self.db.get_checkpoint_by_policy(0)
+        print('other checkpoints', test)
+        for row in test:
+            print('row', dict(row))
 
         self.db.shut_down_db()
         
@@ -227,8 +230,8 @@ class SelfPlayWrapper(aec_to_parallel_wrapper):
             policy: self.load_policy(c) for c, policy in zip(checkpoints, self.environment_policies)
         }
 
-    def load_policy(self, path=None):
-        if path is None:
+    def load_policy(self, paths: list):
+        if len(paths) == 0:
             # if no checkpoint, default to random behaviour.
             return 'random'
         else:

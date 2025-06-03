@@ -124,6 +124,8 @@ class CustomEvalCallback(EventCallback):
             np.where(vec_policy_mapping == polid)[0] for polid in np.unique(vec_policy_mapping)
         ]
 
+        self.num_vec_envs = eval_env_config.num_vec_envs
+
 
     def _init_callback(self) -> None:
         # Does not work in some corner cases, where the wrapper is not the same
@@ -179,7 +181,7 @@ class CustomEvalCallback(EventCallback):
             # Reset success rate buffer
             self._is_success_buffer = []
 
-            policy_episode_rewards, roles_episode_rewards, policy_episode_lengths = self.evaluate_policy(
+            policy_episode_rewards, policy_episode_lengths = self.evaluate_policy(
                 self.model,  # name of the simulator is weird but we're lazy to change it
                 self.eval_env,
                 n_eval_episodes=self.n_eval_episodes,
@@ -213,14 +215,14 @@ class CustomEvalCallback(EventCallback):
                         **kwargs,  # type: ignore[arg-type]
                     )
 
-                for roid in range(len(roles_episode_rewards)):
-                    self.roles_results[roid].append(roles_episode_rewards[polid])
-                    self.roles_timesteps[polid].append(self.num_timesteps)
-                    np.savez(
-                        os.path.join(self.root_log_path, f'role_id_{roid}'),
-                        timesteps=self.roles_timesteps[polid],
-                        results=self.roles_results[roid],
-                    )
+                # for roid in range(len(roles_episode_rewards)):
+                #     self.roles_results[roid].append(roles_episode_rewards[polid])
+                #     self.roles_timesteps[polid].append(self.num_timesteps)
+                #     np.savez(
+                #         os.path.join(self.root_log_path, f'role_id_{roid}'),
+                #         timesteps=self.roles_timesteps[polid],
+                #         results=self.roles_results[roid],
+                #     )
 
 
             # mean them all
@@ -228,13 +230,13 @@ class CustomEvalCallback(EventCallback):
                 policy_episode_rewards[polid] = np.mean(policy_episode_reward)
                 policy_episode_lengths[polid] = np.mean(policy_episode_lengths[polid])
 
-            for roid, role_episode_reward in enumerate(roles_episode_rewards):
-                roles_episode_rewards[roid] = np.mean(role_episode_reward)
+            # for roid, role_episode_reward in enumerate(roles_episode_rewards):
+            #     roles_episode_rewards[roid] = np.mean(role_episode_reward)
                 
             # Add to current Logger
             [self.logger.record(f"eval/polid_{polid}_mean_reward", float(mean_reward)) for polid, mean_reward in enumerate(policy_episode_rewards)]
             [self.logger.record(f"eval/polid_{polid}_mean_lengths", float(mean_lengths)) for polid, mean_lengths in enumerate(policy_episode_lengths)]
-            [self.logger.record(f"eval/role_{roid}_mean_reward", float(mean_reward)) for roid, mean_reward in enumerate(roles_episode_rewards)]
+            # [self.logger.record(f"eval/role_{roid}_mean_reward", float(mean_reward)) for roid, mean_reward in enumerate(roles_episode_rewards)]
             
             # TODO: save each policy based on its own best reward, not jointly.
             mean_policy_reward = np.mean(policy_episode_rewards)
@@ -312,14 +314,16 @@ class CustomEvalCallback(EventCallback):
 
         # initialize evaluation session trackers.
         # num_roles = len(self.role_indexes)
-        n_envs = env.num_envs  # num agents times number of vector envs
+        total_envs = env.num_envs  # all agents times num of vector envs
+        n_envs = self.num_policies * self.num_vec_envs # num policies we are training times num of envs
+        
         episode_policy_rewards = [[] for _ in range(self.num_policies)] # nested list, per policy.
         # episode_roles_rewards = [[] for _ in range(num_roles)]
         episode_lengths = [[] for _ in range(self.num_policies)] 
         all_clipped_actions = [None] * self.num_policies
         all_actions = [None] * self.num_policies
 
-        step_actions = np.zeros(n_envs, dtype=np.int64)
+        step_actions = np.zeros(total_envs, dtype=np.int64)
             
         episode_counts = np.zeros(n_envs, dtype="int")
         # n_eval_episodes are episodes per num_agents times num_envs
@@ -347,8 +351,7 @@ class CustomEvalCallback(EventCallback):
         )
 
         states = None
-        # predict each policy
-
+        # predict for each policy
         while (episode_counts < episode_count_targets).any():
             for polid, policy in simulator.policies.items():
                 if 'action_masks' not in inspect.signature(policy.predict).parameters:
@@ -467,6 +470,7 @@ class CustomEvalCallback(EventCallback):
                             current_reward[enum] = 0
                             current_length[enum] = 0
 
+
             # for roid, (role_index,
             #            current_role_rewards,
             #            episode_role_rewards,
@@ -492,15 +496,12 @@ class CustomEvalCallback(EventCallback):
             if render:
                 env.render()
 
-        print('each episode_policy_rewards:')
-        print('lengths', [len(episode_reward) for episode_reward in episode_policy_rewards])
-        print('means', [np.mean(episode_reward) for episode_reward in episode_policy_rewards])
         mean_reward = [np.mean(episode_reward) for episode_reward in episode_policy_rewards]  # num_policies long
         std_reward = [np.std(episode_reward) for episode_reward in episode_policy_rewards]
         if reward_threshold is not None:
             assert mean_reward > reward_threshold, "Mean reward below threshold: " f"{mean_reward:.2f} < {reward_threshold:.2f}"
         if return_episode_rewards:
-            return episode_policy_rewards, episode_roles_rewards, episode_lengths
+            return episode_policy_rewards, episode_lengths
 
         return mean_reward, std_reward
 
@@ -643,6 +644,17 @@ class CustomCheckpointCallback(CheckpointCallback):
 
         return self._on_step(hparams, score)
 
+    def _checkpoint_path(self, checkpoint_type: str = "", extension: str = "") -> str:
+        """
+        Helper to get checkpoint path for each type of checkpoint.
+
+        :param checkpoint_type: empty for the model, "replay_buffer_"
+            or "vecnormalize_" for the other checkpoints.
+        :param extension: Checkpoint file extension (zip for model, pkl for others)
+        :return: Path to the checkpoint
+        """
+        return os.path.join(self.save_path, f"{self.name_prefix}_{checkpoint_type}{self.num_timesteps}_steps.{extension}")
+
     def _on_step(self, hparams, score) -> bool:
         if self.n_calls % self.save_freq == 0:
             if score is None:
@@ -655,7 +667,7 @@ class CustomCheckpointCallback(CheckpointCallback):
                 {
                     'filepath': model_path,
                     'policy_id': self.polid,
-                    'hyperparamters': hparams,
+                    'hyperparameters': hparams,
                     'score': score, 
                 }
             ]

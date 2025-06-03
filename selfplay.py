@@ -3,6 +3,8 @@ import numpy as np
 import re
 import os
 import json
+import hashlib
+import uuid
 
 from collections import defaultdict
 from ray import tune
@@ -111,6 +113,12 @@ def replace_and_report(base: dict, override: dict, merge=False) -> dict:
 
     return merged
 
+def generate_8char_hash():
+    unique_str = str(uuid.uuid4())  # Generate a unique string
+    hash_object = hashlib.sha256(unique_str.encode())  # Hash it
+    short_hash = hash_object.hexdigest()[:8]  # Take the first 8 characters
+    return short_hash
+
 class SelfPlayOrchestrator:
     """
     A wrapper around ray tune for training. This orchestrates agent selection and policy loading,
@@ -121,6 +129,8 @@ class SelfPlayOrchestrator:
     2. Initialize ray tune and trainable. Tune allows for us to try how different hyperparameters fare in a trial.
     3. Obtain the best result, checkpoint it into the DB, and loop back to 1.
 
+    Each orchestrator will generate its own unique 8-size hash, and that will be the working directory
+    of all checkpoints, ray results, and tensorboard logs.
     """
 
     def __init__(self, config):
@@ -129,6 +139,10 @@ class SelfPlayOrchestrator:
         Most important configurations are what agents we are training, and what agents are part of the environment.
         """
         self.config = config
+        self.hash = generate_8char_hash()
+        self.config.train.root_dir = os.path.join(self.config.train.root_dir, f'Orchestrator_{self.hash}')
+        self.config.db_path = os.path.join(self.config.train.root_dir, self.config.db_name)
+        self.agent_roles = self.config.agent_roles
 
     def commence(self):
         """
@@ -136,17 +150,15 @@ class SelfPlayOrchestrator:
         For all collections of selectable agents, build the trainable and call ray tune to optimize it.
         """
         # we loop over agent_roles to know how many agents there are.
-        tmp_config = deepcopy(self.config)
-        agent_roles = tmp_config.agent_roles
-
-        for agent_role in agent_roles:
+        for agent_role in self.agent_roles:
+            tmp_config = deepcopy(self.config)  # deepcopy to avoid mutating underlying config, for whatever reason.
             tmp_config.selected_agent = agent_role
-            print('-------------------SELECTED AGENT---------------------')
             # for now, made for the case of agent_roles being unique.
-            npcs = [1 if agent != agent_role else 0 for agent in agent_roles]
+            npcs = [1 if agent != agent_role else 0 for agent in self.agent_roles]
+            print('npcs', npcs)
             # boolean mask of npcs: 0 represents the selected agent, 1 represents an agent controlled by the environment.
             policies_controlled_here = [agent_role] # integer indexes of policy controlled here ( for now, just one. )
-            policies_env = [agent for agent in agent_roles if agent != agent_role] # integer indexes of policies controlled here
+            policies_env = [agent for agent in self.agent_roles if agent != agent_role] # integer indexes of policies controlled here
             # apply a mask over specific policies in the config
             trainable = create_trainable()
 
@@ -186,7 +198,8 @@ class SelfPlayOrchestrator:
                 polid: v for polid, v in tmp_config.policies.items() if polid in policies_controlled_here
             }
             tmp_config.npcs = npcs
-            print(tmp_config)
+            print('policies_controlled_here', policies_controlled_here)
+            print('tmp_config', tmp_config)
 
             # merge everything
             merged = {}
@@ -207,19 +220,19 @@ class SelfPlayOrchestrator:
                 tune.with_resources(trainable_cls, resources={"cpu": 5}),
                 tune_config=tune.TuneConfig(
                         scheduler=pbt,
-                        num_samples=10,
+                        num_samples=1,
                         max_concurrent_trials=1,
                 ),
                 run_config=tune.RunConfig(
                     name='test',
-                    storage_path=f"{base_config.train.root_dir}/ray_results/{experiment_name}",
+                    storage_path=f"{tmp_config.train.root_dir}/ray_results/{experiment_name}",
                     verbose=1,
                     stop={"training_iteration": 1},
                 )
             )
 
             results = tuner.fit()
-            print('get best results', results.get_best_results())
+            print('get best results', results.get_best_result())
 
 
 def create_trainable():
@@ -268,14 +281,13 @@ def create_trainable():
 
             # merge policy configurations; override old with new per policy basis.
             policies_hparams = split_dict_by_prefix(ray_config)
-            print('policies_hparams', policies_hparams)
-            print('policies_config', policies_config)
             assert len(policies_hparams) == len(policies_config), 'Assertion failed, mismatching number of policies as specified by tune configuration,' \
                 'and number of policies under the policies section. Failing gracefully.'
             num_policies = len(policies_hparams)
             for polid, incoming_policy_config in policies_hparams.items():
                 policies_config[polid] = replace_and_report(policies_config[polid], incoming_policy_config, merge=True)
-            
+            self.policies_config = policies_config
+
             print('ray_config in setup', ray_config)
             REWARDS_DICT = {
                 CustomRewardNames.GUARD_CAPTURES: ray_config.get('guard_captures'),
@@ -324,7 +336,7 @@ def create_trainable():
             self.simulator = RLRolloutSimulator(
                 train_env=train_env,
                 train_env_config=train_env_config,
-                policies_config=policies_config,
+                policies_config=self.policies_config,
                 policy_mapping=self.policy_mapping,
                 tensorboard_log=self.eval_log_path,
                 callbacks=None,
@@ -334,7 +346,7 @@ def create_trainable():
             )
             self.total_timesteps = training_config.training_iters * train_env.num_envs
             eval_freq = int(self.total_timesteps / training_config.num_evals / train_env.num_envs)
-            eval_freq = int(max(eval_freq, training_config.n_steps * train_env.num_envs))
+            eval_freq = int(max(eval_freq, training_config.n_steps))
             training_config.eval_freq = eval_freq
 
             checkpoint_callbacks = [
@@ -382,7 +394,7 @@ def create_trainable():
             logging_dict = defaultdict()
             mean_policy_scores = []
 
-            for polid in range(len(set(self.policy_mapping))):
+            for polid in self.policies_config:
                 path = os.path.join(self.eval_log_path, "evaluations", f"policy_id_{polid}.npz")
                 thing = np.load(path)
                 mean_scores = np.mean(thing['results'], axis=-1)
@@ -393,15 +405,15 @@ def create_trainable():
                 logging_dict.setdefault(f'policy_{polid}_best_result', max_mean_eval)
                 logging_dict.setdefault(f'policy_{polid}_best_timestep', best_timestep)
 
-            for polid in range(len(set(self.agent_roles))):
-                path = os.path.join(self.eval_log_path, "evaluations", f"role_id_{polid}.npz")
-                thing = np.load(path)
-                mean_scores = np.mean(thing['results'], axis=-1)
-                max_mean_eval = np.max(mean_scores)
-                max_idx = np.argmax(mean_scores)
-                best_timestep = thing['timesteps'][max_idx]
-                logging_dict.setdefault(f'role_{polid}_best_result', max_mean_eval)
-                logging_dict.setdefault(f'role_{polid}_best_timestep', best_timestep)
+            # for polid in range(len(set(self.agent_roles))):
+            #     path = os.path.join(self.eval_log_path, "evaluations", f"role_id_{polid}.npz")
+            #     thing = np.load(path)
+            #     mean_scores = np.mean(thing['results'], axis=-1)
+            #     max_mean_eval = np.max(mean_scores)
+            #     max_idx = np.argmax(mean_scores)
+            #     best_timestep = thing['timesteps'][max_idx]
+            #     logging_dict.setdefault(f'role_{polid}_best_result', max_mean_eval)
+            #     logging_dict.setdefault(f'role_{polid}_best_timestep', best_timestep)
 
             all_policy_scores = sum(mean_policy_scores)
             logging_dict.setdefault('all_policy_scores', all_policy_scores)

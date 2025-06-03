@@ -189,7 +189,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
 
         # Setup for each policy. Reset things, setup timestep tracking things.
         # replace certain agent attributes
-        for polid, policy in self.policies.items():
+        for idx, (polid, policy) in enumerate(self.policies.items()):
             policy.start_time = time.time()
             if policy.ep_info_buffer is None or reset_num_timesteps:
                 policy.ep_info_buffer = deque(maxlen=policy._stats_window_size)
@@ -215,7 +215,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
                 reset_num_timesteps,
             )
 
-            callbacks[polid] = policy._init_callback(callbacks[polid])
+            callbacks[idx] = policy._init_callback(callbacks[idx])
 
         if eval_callback is not None:
             eval_callback = self._init_callback(eval_callback)
@@ -250,12 +250,14 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
             self.num_timesteps += rollout_timesteps
 
             # agent training.
-            for polid, policy in self.policies.items():
-                print('POLID LEARNING', polid)
-                print('POLICY', policy)
+            for idx, (polid, policy) in enumerate(self.policies.items()):
+                print('total_timesteps', total_timesteps)
+                policy.num_timesteps += rollout_timesteps
+                print('num timesteps before prog update', policy.num_timesteps)
                 policy._update_current_progress_remaining(
                     policy.num_timesteps, total_timesteps  # 
                 )
+                print('num timesteps after prog update', policy.num_timesteps)
                 if log_interval is not None and policy.num_timesteps % log_interval == 0:
                     fps = int(policy.num_timesteps / (time.time() - policy.start_time))
                     policy_config = self._policies_config[polid]
@@ -266,7 +268,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
                     policy.logger.record(
                         "time/iterations", policy.num_timesteps, exclude="tensorboard"
                     )
-                    concat = np.concatenate(total_rewards[polid])
+                    concat = np.concatenate(total_rewards[idx])
                     mean_policy_reward = (np.sum(concat) / len(concat)).item()
                     policy.logger.record(
                         f"rollout/mean_policy_reward_polid_{polid}", mean_policy_reward,
@@ -333,13 +335,16 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         
         n_steps = 0
         step_actions = np.zeros(self.total_envs, dtype=np.int64)
+        the_first_key = list(self.policies.keys())[0]  # idk what keys self.policies will have sooo just get any one
 
         if last_obs_buffer is None:
             last_obs_buffer = self.format_env_returns(last_obs, self.policy_agent_indexes, to_tensor=False)
-            last_obs = self.format_env_returns(last_obs, self.policy_agent_indexes, device=self.policies[0].device, to_tensor=True)
+            print('self.policies', self.policies)
+            print('list(self.policies.keys())', list(self.policies.keys()))
+            last_obs = self.format_env_returns(last_obs, self.policy_agent_indexes, device=self.policies[the_first_key].device, to_tensor=True)
 
         # iterate over policies, and do pre-rollout setups.
-        for polid, ((_, policy), policy_index) in enumerate(zip(self.policies.items(), self.policy_agent_indexes)):
+        for idx, ((_, policy), policy_index) in enumerate(zip(self.policies.items(), self.policy_agent_indexes)):
             num_envs = len(policy_index)
             policy.policy.set_training_mode(False)
             policy.n_steps = 0
@@ -351,32 +356,32 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
             [callback.on_rollout_start() for callback in callbacks]
             eval_callback.on_rollout_start()
             policy._last_episode_starts = np.ones((num_envs,), dtype=bool)
-            all_last_episode_starts[polid] = policy._last_episode_starts
+            all_last_episode_starts[idx] = policy._last_episode_starts
 
 
         # do rollout
         while n_steps < n_rollout_steps:
             with torch.no_grad():
-                for polid, policy in self.policies.items():
+                for idx, (polid, policy) in enumerate(self.policies.items()):
                     if 'action_masks' not in inspect.signature(policy.policy.forward).parameters:
                         (
-                            all_actions[polid],
-                            all_values[polid],
-                            all_log_probs[polid],
+                            all_actions[idx],
+                            all_values[idx],
+                            all_log_probs[idx],
                         ) = policy.policy.forward(last_obs[polid])
                     else:
                         action_masks = policy.get_action_masks(last_obs[polid])
-                        all_action_masks[polid] = action_masks
+                        all_action_masks[idx] = action_masks
                         # print('action_masks', action_masks)
                         (
-                            all_actions[polid],
-                            all_values[polid],
-                            all_log_probs[polid],
+                            all_actions[idx],
+                            all_values[idx],
+                            all_log_probs[idx],
                         ) = policy.policy.forward(last_obs[polid], action_masks=action_masks)
   
-                    if hasattr(all_actions[polid], 'cpu'):
-                        all_actions[polid] = all_actions[polid].cpu().numpy()
-                    clipped_actions = all_actions[polid]
+                    if hasattr(all_actions[idx], 'cpu'):
+                        all_actions[idx] = all_actions[idx].cpu().numpy()
+                    clipped_actions = all_actions[idx]
                     if isinstance(self.action_space, Box):
                         clipped_actions = np.clip(
                             clipped_actions,
@@ -388,17 +393,17 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
                         clipped_actions = np.array(
                             [action.item() for action in clipped_actions]
                         )
-                    all_clipped_actions[polid] = clipped_actions
+                    all_clipped_actions[idx] = clipped_actions
             
             # TODO: SETTLE HOW WE PASS TO STEP
-            for polid, actions in enumerate(all_clipped_actions):
-                policy_agent_index = self.policy_agent_indexes[polid]
+            for idx, actions in enumerate(all_clipped_actions):
+                policy_agent_index = self.policy_agent_indexes[idx]
                 step_actions[policy_agent_index] = actions
 
             # actually step in the environment
             obs, rewards, dones, infos = self.env.step(step_actions)
 
-            all_curr_obs = self.format_env_returns(obs, policy_agent_indexes=self.policy_agent_indexes, to_tensor=True, device=self.policies[0].device)
+            all_curr_obs = self.format_env_returns(obs, policy_agent_indexes=self.policy_agent_indexes, to_tensor=True, device=self.policies[the_first_key].device)
             all_curr_obs_buffer = self.format_env_returns(obs, policy_agent_indexes=self.policy_agent_indexes, to_tensor=False)
             all_rewards = self.format_env_returns(rewards, policy_agent_indexes=self.policy_agent_indexes, to_tensor=False)
             all_dones = self.format_env_returns(dones, policy_agent_indexes=self.policy_agent_indexes, to_tensor=False)
@@ -415,57 +420,55 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
             thing, score = eval_callback.on_step()
             [
                 callback.on_step(
-                    hparams=self._policies_config[polid],
+                    hparams=dict(self._policies_config[idx]),
                     score=score,
-            ) for polid, callback in enumerate(callbacks)]
+            ) for idx, (callback, polid) in enumerate(zip(callbacks, self.policies))]
             if not thing:  # early stopping from StopTrainingOnNoModelImprovement
                 continue_training = False
 
             n_steps += self.total_envs
             # start = time.time()
             # add data to the rollout buffers
-            for polid, policy in self.policies.items():
-                policy._update_info_buffer(all_infos[polid])
+            for idx, (polid, policy) in enumerate(self.policies.items()):
+                policy._update_info_buffer(all_infos[idx])
                 if isinstance(self.action_space, Discrete):
-                    all_actions[polid] = all_actions[polid].reshape(-1, 1)
-                if hasattr(all_actions[polid], 'cpu'):
-                    all_actions[polid] = all_actions[polid].cpu().numpy()
+                    all_actions[idx] = all_actions[idx].reshape(-1, 1)
+                if hasattr(all_actions[idx], 'cpu'):
+                    all_actions[idx] = all_actions[idx].cpu().numpy()
                 if 'action_masks' not in inspect.signature(policy.rollout_buffer.add).parameters:
                     policy.rollout_buffer.add(
                         obs=deepcopy(last_obs_buffer[polid]),
-                        action=deepcopy(all_actions[polid]),
-                        reward=deepcopy(all_rewards[polid]),
+                        action=deepcopy(all_actions[idx]),
+                        reward=deepcopy(all_rewards[idx]),
                         episode_start=deepcopy(policy._last_episode_starts),
-                        value=deepcopy(all_values[polid]),
-                        log_prob=deepcopy(all_log_probs[polid]),
+                        value=deepcopy(all_values[idx]),
+                        log_prob=deepcopy(all_log_probs[idx]),
                     )
                 else:
                     policy.rollout_buffer.add(
                         obs=deepcopy(last_obs_buffer[polid]),
-                        action=deepcopy(all_actions[polid]),
-                        reward=deepcopy(all_rewards[polid]),
+                        action=deepcopy(all_actions[idx]),
+                        reward=deepcopy(all_rewards[idx]),
                         episode_start=deepcopy(policy._last_episode_starts),
-                        value=deepcopy(all_values[polid]),
-                        log_prob=deepcopy(all_log_probs[polid]),
-                        action_masks=deepcopy(all_action_masks[polid])
+                        value=deepcopy(all_values[idx]),
+                        log_prob=deepcopy(all_log_probs[idx]),
+                        action_masks=deepcopy(all_action_masks[idx])
                     )
-                total_rewards[polid].append(all_rewards[polid])
+                total_rewards[idx].append(all_rewards[idx])
                 policy._last_obs = all_curr_obs_buffer[polid]
-                policy._last_episode_starts = all_dones[polid]
-
+                policy._last_episode_starts = all_dones[idx]
 
             last_obs = all_curr_obs
             last_obs_buffer = all_curr_obs_buffer  # APPARENTLY I WAS JUST ADDING THE SAME OBSERVATION AGAIN AND AGAIN NO WONDER CCB
             all_last_episode_starts = all_dones
             
-
         with torch.no_grad():
             # Compute value for the last timestep
             # Masking is not needed here, the choice of action doesn't matter.
             # We only want the value of the current observation.
-            for polid, policy in self.policies.items():
+            for idx, (polid, policy) in enumerate(self.policies.items()):
                 values = policy.policy.predict_values(last_obs[polid])  # type: ignore[arg-type]
-                policy.rollout_buffer.compute_returns_and_advantage(last_values=values, dones=all_last_episode_starts[polid])
+                policy.rollout_buffer.compute_returns_and_advantage(last_values=values, dones=all_last_episode_starts[idx])
 
         [callback.on_rollout_end() for callback in callbacks]
         eval_callback.on_rollout_end()

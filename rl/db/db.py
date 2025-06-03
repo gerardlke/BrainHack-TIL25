@@ -19,6 +19,7 @@ class RL_DB:
         self.connection = None
         self.db_file = db_file
         self.table_name = table_name 
+        self.verbose = verbose
 
     def set_up_db(self, timeout=100):
         """Sets up the database instance within class attributes."""
@@ -50,11 +51,13 @@ class RL_DB:
 
     def create_connection(self, timeout=100):
         """Establishes a connection to a SQLite database file and creates the file if it doesn't exist."""
-        print('Attempting to connect to sqlite with timeout', timeout)
+        if self.verbose:
+            print('Attempting to connect to sqlite with timeout', timeout)
         try:
             self.connection = sqlite3.connect(self.db_file, timeout=timeout)
             self.connection.row_factory = sqlite3.Row  # Set row_factory to sqlite3.Row for dictionary-like access to rows
-            print(f"Connection to SQLite database '{self.db_file}' successful")
+            if self.verbose:
+                print(f"Connection to SQLite database '{self.db_file}' successful")
         except Error as err:
             print(f"Error connecting to SQLite: '{err}'")
 
@@ -103,7 +106,8 @@ class RL_DB:
         """
         res = self.execute_query(query)
         if res is not None:
-            print(f'Table {self.table_name} set up successfully.')
+            if self.verbose:
+                print(f'Table {self.table_name} set up successfully.')
         else:
             print('Failure to create table. Please debug.')
 
@@ -163,7 +167,8 @@ class RL_DB:
             if shuffle:
                 random.shuffle(checkpoints)
             return checkpoints
-        print(f"No checkpoints found in the database for policy index {policy}.")
+        if self.verbose:
+            print(f"No checkpoints found in the database for policy index {policy}.")
         return []
 
 
