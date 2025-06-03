@@ -145,7 +145,8 @@ class RL_DB:
         users = self.execute_query_and_return(query)
         if users:
             return users
-        print("\nNo checkpoints found in the database.")
+        print("No checkpoints found in the database.")
+        return []
 
     def get_checkpoint_by_policy(self, policy, shuffle=False):
         """Retrieves single checkpoint from the checkpoints table by index, either best index or ."""
@@ -159,34 +160,16 @@ class RL_DB:
             if shuffle:
                 random.shuffle(checkpoints)
             return checkpoints
-        print(f"\nNo checkpoints found in the database for policy index {policy}.\n")
-
-    # Database saving
-
-    def export_database_to_sql_dump(self, db_file_path, export_sql_file_path):
-        """
-        Exports the entire SQLite database schema and data to a .sql dump file.
-        This is useful for moving the database to a different SQL system or for backup.
-        """
-        try:
-            conn = sqlite3.connect(db_file_path)
-            with open(export_sql_file_path, 'w') as f:
-                for line in conn.iterdump():
-                    f.write(f'{line}\n')
-            conn.close()
-            print(f"Database '{db_file_path}' exported successfully to '{export_sql_file_path}'")
-        except Error as e:
-            print(f"Error exporting database to SQL dump: {e}")
-        except Exception as e:
-            print(f"An unexpected error occurred during SQL dump export: {e}")
+        print(f"No checkpoints found in the database for policy index {policy}.")
+        return []
 
 
 # Sample code
 if __name__ == "__main__":
     db = RL_DB(db_file=DEFAULT_DB_FILE, table_name=DB_TABLE)
 
-    db.set_up_db()
-    db.drop_table()
+    # db.set_up_db()
+    # db.drop_table()
 
     db.set_up_db()
 
@@ -213,7 +196,7 @@ if __name__ == "__main__":
             'best_opponents': 'um'
         },
     ]
-    db.add_checkpoints(sample_data)
+    # db.add_checkpoints(sample_data)
 
     checkpoints = db.get_all_checkpoints()
     for checkpoint in checkpoints:
@@ -226,7 +209,5 @@ if __name__ == "__main__":
     checkpoints = db.get_checkpoint_by_policy(0, shuffle=True)
     for checkpoint in checkpoints:
         print('3 checkpoint', checkpoint['filepath'], checkpoint['policy_id'], checkpoint['hyperparameters'], checkpoint['score'])
-        
-    # db.export_database_to_sql_dump(db_file_path)
 
     db.shut_down_db()
