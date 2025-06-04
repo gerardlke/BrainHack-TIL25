@@ -210,16 +210,8 @@ class SelfPlayWrapper(BaseParallelWrapper):
         self.loaded_policies = None
         self.opponent_sampling = opponent_sampling
 
-        # Generate a random 32-byte (256-bit) value
-        random_bytes = secrets.token_bytes(32)
+        self.top_opponents = 5
 
-        # Hash it using SHA-256
-        random_hash = hashlib.sha256(random_bytes).hexdigest()
-
-        self.hash = random_hash
-
-    def load_policies(self):
-        # arbitrary load checkpoint for each agent function
         self.db.set_up_db(timeout=100)
         # print('env', self.hash, 'connected to db')
         checkpoints = [
@@ -233,40 +225,54 @@ class SelfPlayWrapper(BaseParallelWrapper):
             in zip(checkpoints, self.environment_policies, self.environment_agents)
         }
 
+        # Generate a random 32-byte (256-bit) value
+        # random_bytes = secrets.token_bytes(32)
+
+        # # Hash it using SHA-256
+        # random_hash = hashlib.sha256(random_bytes).hexdigest()
+
+        # self.hash = random_hash
+
+    def choose_policies(self):
+        """
+        Connects to database and recieves information on what opponent policies exist.
+        Loading policies has two scenarios: One, the environment type is normal and two, the environment type is eval mode True.
+
+        When in evaluation mode, we 
+        """
+        # arbitrary load checkpoint for each agent function
+        
+
     def load_policy(self, checkpoints: list):
+        all_loaded = []
         if len(checkpoints) == 0:
             # if no checkpoint, default to random behaviour.
-            return 'random'
+            [all_loaded.append('random') for _ in range(self.top_opponents)]
         else:
-            # just select the first for now
-            print('checkpoints', checkpoints)
-            checkpoint = checkpoints[0]
-            hyperparams = json.loads(checkpoint['hyperparameters'])
-            filepath = checkpoint['filepath']
+            for checkpoint in checkpoints[:self.top_opponents]:
+                hyperparams = json.loads(checkpoint['hyperparameters'])
+                filepath = checkpoint['filepath']
 
-            algo_type = eval(hyperparams['algorithm'])
-            hyperparams.pop('algorithm')
-            policy_type = hyperparams['policy']
-            
-            policy = algo_type.load(
-                path=filepath,
-                policy=policy_type,
-            )
-            return policy
+                algo_type = eval(hyperparams['algorithm'])
+                hyperparams.pop('algorithm')
+                policy_type = hyperparams['policy']
+                
+                policy = algo_type.load(
+                    path=filepath,
+                    policy=policy_type,
+                )
+                all_loaded.append*Policy
+        
+        return all_loaded
 
     def reset(self, seed: int | None=None, options: dict | None=None):  # type: ignore
         """
-        This is the core reason for incompatibility with supersuit vector environments n whatnot. Reset now requires us to recieve
-        some kinda of boolean mask on which agents are currently NPCs and which are learning (i.e their actions are incoming and not internal to the
-        environment.) As this is not supported generally, this wrapper must be the last to wrap around the environment.
-        
-        Args:
-            - npcs: Boolean list of what agents are considered part of environment. If [0, 1, 1, 1], this means that this environment
-                will load in the policies tied to agents at indexes 1, 2 and 3 (irregardless of if it is the same policy)
+        Wraps around super class reset.
         """
-        self.load_policies()
+        self.choose_policies()
         
         return super().reset(seed, options)
+
 
     def step(self, actions):
         """
@@ -275,6 +281,14 @@ class SelfPlayWrapper(BaseParallelWrapper):
 
         actions are a dict of agent names to their actions. Since this is nested within the vectorized wrapper,
         expect exactly what the base environment's action space tells us, without worrying about batches etc.
+
+        Serious, significant NOTE: During evaluation, we want to evaluate on ALL best opponent checkpoints. The problem is, the callback / simulator
+        doesn't handle policy loading, we do. However, they handle the looping and stopping of evaluation. Because of constrained supersuit vector env 
+        api things, communciation of when to start and stop isn't possible without a lot of customization which we want to avoid.
+        Thus, mutate stepping.
+
+        We opt to not post done=1 in our returns, until ALL best opponents have been evaluated against. This means that when stepping, if
+        the underlying env tells us done=1, we check for remaining opponents to evaluate against. Once we have no more, then set done=1.
         """
         for agent in actions:
             if agent in self.environment_agents:
@@ -301,7 +315,12 @@ class SelfPlayWrapper(BaseParallelWrapper):
                     action = action.item()
                 actions[agent] = action
 
-        return super().step(actions)
+        observations, rewards, dones, infos = super().step(actions)  # type: ignore
+        if dones:
+
+
+        return 
+
 
 class modified_env(raw_env):
     """
