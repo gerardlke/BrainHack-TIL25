@@ -70,7 +70,7 @@ train:
   # you, so if you set this to be 250000, and have 2 vec envs * 4 agents, it will be 250k * 8 = 2mil
   n_eval_episodes: 2
   num_evals: 2
-  root_dir: '/home/jovyan/interns/ben/BrainHack-TIL25/selfplay'
+  root_dir: '/mnt/e/BrainHack-TIL25/selfplay'
   experiment_name: 'masked_ppo'
   use_action_masking: True
   no_improvement: 5

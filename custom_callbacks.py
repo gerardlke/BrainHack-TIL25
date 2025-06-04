@@ -318,11 +318,11 @@ class CustomEvalCallback(EventCallback):
         total_envs = env.num_envs  # all agents times num of vector envs
         n_envs = self.num_policies * self.num_vec_envs # num policies we are training times num of envs
         
-        episode_policy_rewards = [[] for _ in range(self.num_policies)] # nested list, per policy.
+        episode_policy_rewards = {polid: [] for polid in self.model._policies_config}
         # episode_roles_rewards = [[] for _ in range(num_roles)]
-        episode_lengths = [[] for _ in range(self.num_policies)] 
-        all_clipped_actions = [None] * self.num_policies
-        all_actions = [None] * self.num_policies
+        episode_lengths = {polid: [] for polid in self.model._policies_config}
+        all_clipped_actions = {}
+        all_actions = {}
 
         step_actions = np.zeros(total_envs, dtype=np.int64)
             
@@ -335,8 +335,8 @@ class CustomEvalCallback(EventCallback):
         # btw n_envs is already the num_vec_envs * num_agents, cuz supersuit and parallel env are nice like that
         # for each env that reaches a ended state, we the reward of that agent-env to episode_rewards.
         # vice versa for episode_lengths
-        current_policy_rewards = [np.zeros(len(policy_agent_index)) 
-                for policy_agent_index in self.policy_agent_indexes]
+        current_policy_rewards = {np.zeros(len(policy_agent_index)) 
+                for polid, policy_agent_index in self.policy_agent_indexes}
         # current_roles_rewards = [np.zeros(len(role_indexes)) 
         #         for role_indexes in self.role_indexes]
         current_lengths = [np.zeros(len(policy_agent_index), dtype='int') 
@@ -355,7 +355,8 @@ class CustomEvalCallback(EventCallback):
         states = None
         # predict for each policy
         while (episode_counts < episode_count_targets).any():
-            for idx, (polid, policy) in enumerate(simulator.policies.items()):
+            for polid, policy in simulator.policies.items():
+                print('episode_starts??', episode_starts)
                 if 'action_masks' not in inspect.signature(policy.predict).parameters:
                         actions, states = policy.predict(
                             last_obs[polid],  # type: ignore[arg-type]
@@ -374,11 +375,11 @@ class CustomEvalCallback(EventCallback):
                             action_masks=action_masks
                         )
  
-                all_actions[idx] = actions
+                all_actions[polid] = actions
 
-                if hasattr(all_actions[idx], 'cpu'):
-                    all_actions[idx] = all_actions[idx].cpu().numpy()
-                clipped_actions = all_actions[idx]
+                if hasattr(all_actions[polid], 'cpu'):
+                    all_actions[polid] = all_actions[polid].cpu().numpy()
+                clipped_actions = all_actions[polid]
                 if isinstance(policy.action_space, Box):
                     clipped_actions = np.clip(
                         clipped_actions,
@@ -390,11 +391,14 @@ class CustomEvalCallback(EventCallback):
                     clipped_actions = np.array(
                         [action.item() for action in clipped_actions]
                     )
-                all_clipped_actions[idx] = clipped_actions
+                all_clipped_actions[polid] = clipped_actions
 
-            for polid, actions in enumerate(all_clipped_actions):
+            print('all_clipped_actions', all_clipped_actions)
+            for polid, actions in all_clipped_actions.items():
                 policy_agent_index = self.policy_agent_indexes[polid]
+                print('policy_agent_index', policy_agent_index)
                 step_actions[policy_agent_index] = actions
+            print('all step_actions', step_actions)
     
             # we split by policy and by roles.
             # policywise-split all returns
@@ -551,8 +555,8 @@ class CustomEvalCallback(EventCallback):
         episode_policy_rewards = [[] for _ in range(self.num_policies)] # nested list, per policy.
         # episode_roles_rewards = [[] for _ in range(num_roles)]
         episode_lengths = [[] for _ in range(self.num_policies)] 
-        all_clipped_actions = [None] * self.num_policies
-        all_actions = [None] * self.num_policies
+        all_clipped_actions = {}
+        all_actions = {}
 
         step_actions = np.zeros(total_envs, dtype=np.int64)
             
@@ -622,9 +626,11 @@ class CustomEvalCallback(EventCallback):
                     )
                 all_clipped_actions[idx] = clipped_actions
 
-            for polid, actions in enumerate(all_clipped_actions):
-                policy_agent_index = self.policy_agent_indexes[polid]
+            print('all_clipped_actions', all_clipped_actions)
+            for idx, actions in enumerate(all_clipped_actions):
+                policy_agent_index = self.policy_agent_indexes[idx]
                 step_actions[policy_agent_index] = actions
+            print('all step_actions', step_actions)
     
             # we split by policy and by roles.
             # policywise-split all returns
@@ -737,118 +743,6 @@ class CustomEvalCallback(EventCallback):
 
         return mean_reward, std_reward
 
-
-    def seperate_agent_evaluate(
-        self,
-        simulator,
-        _env: Union[gym.Env, VecEnv],
-        n_eval_episodes: int = 10,
-        deterministic: bool = True,
-        render: bool = False,
-        callback: Optional[Callable[[dict[str, Any], dict[str, Any]], None]] = None,
-        reward_threshold: Optional[float] = None,
-        return_episode_rewards: bool = False,
-        warn: bool = True,
-    ) -> Union[tuple[float, float], tuple[list[float], list[int]]]:
-        """
-        Evaluates each policy seperately. This means that we make a distinction not between the policies the agents
-        are operating under (because they are all the same), but rather the nature of each agent.
-
-        We will still use policy_agent_indexes
-        """
-        is_monitor_wrapped = False
-        observations = _env.reset()
-
-        # Avoid circular import
-        from stable_baselines3.common.monitor import Monitor
-
-        if not isinstance(_env, VecEnv):
-            _env = DummyVecEnv([lambda: _env])  # type: ignore[list-item, return-value]
-
-        is_monitor_wrapped = is_vecenv_wrapped(_env, VecMonitor) or _env.env_is_wrapped(Monitor)[0]
-
-        if not is_monitor_wrapped and warn:
-            warnings.warn(
-                "Evaluation environment is not wrapped with a ``Monitor`` wrapper. "
-                "This may result in reporting modified episode lengths and rewards, if other wrappers happen to modify these. "
-                "Consider wrapping environment first with ``Monitor`` wrapper.",
-                UserWarning,
-            )
-
-        n_envs = _env.num_envs
-        episode_rewards = [[] for _ in range(self.num_policies)] # nested list, per policy.
-        # each nested list is appended on a per-env basis
-        episode_lengths = [[] for _ in range(self.num_policies)] 
-
-        episode_counts = np.zeros(n_envs, dtype="int")
-        # Divides episodes among different sub environments in the vector as evenly as possible
-        episode_count_targets = np.array([n_eval_episodes for _ in range(n_envs)], dtype="int")
-        episode_starts = np.ones((_env.num_envs,), dtype=bool)
-
-        scout_envs = int(_env.num_envs * len(policy_agent_indexes[1]))
-        guard_envs = int(_env.num_envs * len(policy_agent_indexes[0]))
-
-        current_rewards = [np.zeros(guard_envs), np.zeros(scout_envs)]
-        current_lengths = [np.zeros(guard_envs, dtype="int"), np.zeros(scout_envs, dtype="int")]
-
-        states = None
-        episode_starts = np.ones((_env.num_envs,), dtype=bool)
-        while (episode_counts < episode_count_targets).any():
-            actions, states = model.predict(
-                observations,  # type: ignore[arg-type]
-                state=states,
-                episode_start=episode_starts,
-                deterministic=deterministic,
-            )
-            new_observations, rewards, dones, infos = _env.step(actions)
-            policy_agent_indexes = model.get_2_policy_agent_indexes_from_obs(last_obs=observations)
-
-            for env in range(n_envs):
-                polid = next(polid for polid, envs in enumerate(policy_agent_indexes) if env in envs)
-                current_rewards[polid][env] += rewards[env]
-                current_lengths[polid][env] += 1
-                if episode_counts[env] < episode_count_targets[env]:
-                    # unpack values so that the callback can access the local variables
-                    reward = rewards[env]
-                    done = dones[env]
-                    info = infos[env]
-                    episode_starts[env] = done
-
-                    if callback is not None:
-                        callback(locals(), globals())
-
-                    if dones[env]:
-                        if is_monitor_wrapped:
-                            # Atari wrapper can send a "done" signal when
-                            # the agent loses a life, but it does not correspond
-                            # to the true end of episode
-                            if "episode" in info.keys():
-                                # Do not trust "done" with episode endings.
-                                # Monitor wrapper includes "episode" key in info if environment
-                                # has been wrapped with it. Use those rewards instead.
-                                episode_rewards[polid].append(info["episode"]["r"])
-                                episode_lengths[polid].append(info["episode"]["l"])
-                                # Only increment at the real end of an episode
-                                episode_counts[env] += 1
-                        else:
-                            episode_rewards[polid].append(current_rewards[polid][env])
-                            episode_lengths[polid].append(current_lengths[polid][env])
-                            episode_counts[env] += 1
-                        current_rewards[polid][env] = 0
-                        current_lengths[polid][env] = 0
-
-            observations = new_observations
-
-            if render:
-                env.render()
-
-        mean_reward = [np.mean(episode_reward) for episode_reward in episode_rewards]  # num_policies long
-        std_reward = [np.std(episode_reward) for episode_reward in episode_rewards]
-        if reward_threshold is not None:
-            assert mean_reward > reward_threshold, "Mean reward below threshold: " f"{mean_reward:.2f} < {reward_threshold:.2f}"
-        if return_episode_rewards:
-            return episode_rewards, episode_lengths
-        return mean_reward, std_reward
 
 class CustomCheckpointCallback(CheckpointCallback):
     """

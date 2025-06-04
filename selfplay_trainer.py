@@ -317,16 +317,16 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         # temporary lists to hold things before saved into history_buffer of agent.
 
         continue_training = True
-        all_last_episode_starts = [None] * self.num_policies
-        all_clipped_actions = [None] * self.num_policies
-        all_rewards = [None] * self.num_policies
-        all_dones = [None] * self.num_policies
-        all_infos = [None] * self.num_policies
-        all_actions = [None] * self.num_policies
-        all_values = [None] * self.num_policies
-        all_log_probs = [None] * self.num_policies
-        all_action_masks = [None] * self.num_policies
-        last_values = [None] * self.num_policies
+        all_last_episode_starts = {}
+        all_clipped_actions = {}
+        all_rewards = {}
+        all_dones = {}
+        all_infos = {}
+        all_actions = {}
+        all_values = {}
+        all_log_probs = {}
+        all_action_masks = {}
+        last_values = {}
         total_rewards = [[] for _ in range(self.num_policies)] 
         
         n_steps = 0
@@ -356,26 +356,26 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         # do rollout
         while n_steps < n_rollout_steps:
             with torch.no_grad():
-                for idx, (polid, policy) in enumerate(self.policies.items()):
+                for polid, policy in self.policies.items():
                     if 'action_masks' not in inspect.signature(policy.policy.forward).parameters:
                         (
-                            all_actions[idx],
-                            all_values[idx],
-                            all_log_probs[idx],
+                            all_actions[polid],
+                            all_values[polid],
+                            all_log_probs[polid],
                         ) = policy.policy.forward(last_obs[polid])
                     else:
                         action_masks = policy.get_action_masks(last_obs[polid])
-                        all_action_masks[idx] = action_masks
+                        all_action_masks[polid] = action_masks
                         # print('action_masks', action_masks)
                         (
-                            all_actions[idx],
-                            all_values[idx],
-                            all_log_probs[idx],
+                            all_actions[polid],
+                            all_values[polid],
+                            all_log_probs[polid],
                         ) = policy.policy.forward(last_obs[polid], action_masks=action_masks)
   
-                    if hasattr(all_actions[idx], 'cpu'):
-                        all_actions[idx] = all_actions[idx].cpu().numpy()
-                    clipped_actions = all_actions[idx]
+                    if hasattr(all_actions[polid], 'cpu'):
+                        all_actions[polid] = all_actions[polid].cpu().numpy()
+                    clipped_actions = all_actions[polid]
                     if isinstance(self.action_space, Box):
                         clipped_actions = np.clip(
                             clipped_actions,
@@ -390,9 +390,12 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
                     all_clipped_actions[idx] = clipped_actions
             
             # TODO: SETTLE HOW WE PASS TO STEP
-            for idx, actions in enumerate(all_clipped_actions):
-                policy_agent_index = self.policy_agent_indexes[idx]
+            print('all_clipped_actions', all_clipped_actions)
+            for polid, actions in all_clipped_actions.items():
+                policy_agent_index = self.policy_agent_indexes[polid]
+                print('policy_agent_index', policy_agent_index)
                 step_actions[policy_agent_index] = actions
+            print('all step_actions', step_actions)
 
             # actually step in the environment
             obs, rewards, dones, infos = self.env.step(step_actions)
@@ -423,34 +426,34 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
             n_steps += self.total_envs
             # start = time.time()
             # add data to the rollout buffers
-            for idx, (polid, policy) in enumerate(self.policies.items()):
-                policy._update_info_buffer(all_infos[idx])
+            for polid, policy in self.policies.items():
+                policy._update_info_buffer(all_infos[polid])
                 if isinstance(self.action_space, Discrete):
-                    all_actions[idx] = all_actions[idx].reshape(-1, 1)
-                if hasattr(all_actions[idx], 'cpu'):
-                    all_actions[idx] = all_actions[idx].cpu().numpy()
+                    all_actions[polid] = all_actions[polid].reshape(-1, 1)
+                if hasattr(all_actions[polid], 'cpu'):
+                    all_actions[polid] = all_actions[polid].cpu().numpy()
                 if 'action_masks' not in inspect.signature(policy.rollout_buffer.add).parameters:
                     policy.rollout_buffer.add(
                         obs=deepcopy(last_obs_buffer[polid]),
-                        action=deepcopy(all_actions[idx]),
-                        reward=deepcopy(all_rewards[idx]),
+                        action=deepcopy(all_actions[polid]),
+                        reward=deepcopy(all_rewards[polid]),
                         episode_start=deepcopy(policy._last_episode_starts),
-                        value=deepcopy(all_values[idx]),
-                        log_prob=deepcopy(all_log_probs[idx]),
+                        value=deepcopy(all_values[polid]),
+                        log_prob=deepcopy(all_log_probs[polid]),
                     )
                 else:
                     policy.rollout_buffer.add(
                         obs=deepcopy(last_obs_buffer[polid]),
-                        action=deepcopy(all_actions[idx]),
-                        reward=deepcopy(all_rewards[idx]),
+                        action=deepcopy(all_actions[polid]),
+                        reward=deepcopy(all_rewards[polid]),
                         episode_start=deepcopy(policy._last_episode_starts),
-                        value=deepcopy(all_values[idx]),
-                        log_prob=deepcopy(all_log_probs[idx]),
-                        action_masks=deepcopy(all_action_masks[idx])
+                        value=deepcopy(all_values[polid]),
+                        log_prob=deepcopy(all_log_probs[polid]),
+                        action_masks=deepcopy(all_action_masks[polid])
                     )
-                total_rewards[idx].append(all_rewards[idx])
+                total_rewards[polid].append(all_rewards[polid])
                 policy._last_obs = all_curr_obs_buffer[polid]
-                policy._last_episode_starts = all_dones[idx]
+                policy._last_episode_starts = all_dones[polid]
 
             last_obs = all_curr_obs
             last_obs_buffer = all_curr_obs_buffer  # APPARENTLY I WAS JUST ADDING THE SAME OBSERVATION AGAIN AND AGAIN NO WONDER CCB
@@ -460,9 +463,9 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
             # Compute value for the last timestep
             # Masking is not needed here, the choice of action doesn't matter.
             # We only want the value of the current observation.
-            for idx, (polid, policy) in enumerate(self.policies.items()):
+            for polid, policy in self.policies.items():
                 values = policy.policy.predict_values(last_obs[polid])  # type: ignore[arg-type]
-                policy.rollout_buffer.compute_returns_and_advantage(last_values=values, dones=all_last_episode_starts[idx])
+                policy.rollout_buffer.compute_returns_and_advantage(last_values=values, dones=all_last_episode_starts[polid])
 
         [callback.on_rollout_end() for callback in callbacks]
         eval_callback.on_rollout_end()
@@ -684,7 +687,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         map to which policies.
         """
         policy_mapping = last_obs['scout']
-        policy_agent_indexes = [None] * self.num_policies
+        policy_agent_indexes = {}
         for polid in range(self.num_policies):
             policy_agent_indexes[polid] = np.where(policy_mapping == polid)[0]
 
