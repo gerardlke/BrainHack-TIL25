@@ -84,7 +84,6 @@ class ModifiedMaskedPPO(MaskablePPO):
             callback = CallbackList([callback, ProgressBarCallback()])
 
         callback.init_callback(self)
-        print('callback after init', callback)
         return callback
 
     def get_action_masks(self, observation):
@@ -144,12 +143,21 @@ class ModifiedMaskedPPO(MaskablePPO):
 
         # will fail for the case of normal obs for now
         action_masks = np.zeros((viewcone.shape[0], self.action_space.n))
-        test = rearrange(viewcone, 'A (S R C B) -> A S B R C', B=8, R=7, C=5)
-        test = test[:, -1, :, :, :]
+        if viewcone.ndim == 2:
+            test = rearrange(viewcone, 'A (S R C B) -> A S B R C', B=8, R=7, C=5)
+            test = test[:, -1, :, :, :]
+            center_tile_walls = test[:, :4, 2, 2]
+        elif viewcone.ndim == 1:
+            test = rearrange(viewcone, '(S R C B) -> S B R C', B=8, R=7, C=5)
+            test = test[-1, :, :, :]
+            center_tile_walls = test[:4, 2, 2][np.newaxis, :]
+        else:
+            raise AssertionError('Assertion failed. viewcone has more than 2 dimensions, which is not currently supported by the get_action_masks ' \
+                'method in ModifiedMaskedPPO.')
 
         # 1. Disable the corresponding action if there is a wall there.
         # step a: Rearrange the order of directions to fit action space order
-        curr_tile_walls = test[:, :4, 2, 2]
+        
         ### IN HERE, LETS SAY YOU GET [0, 0, 1, 1]. This translates to 
         # [0, 0, 1, 1, 0, 1, 0, 0]
         # left of the agent, behind the agent, right of the agent, forward of agent. AGENT POV
@@ -157,7 +165,9 @@ class ModifiedMaskedPPO(MaskablePPO):
         # anyways lbrf -> fblr
         action_wall_indexes = np.array([3, 1, 0, 2])  # i.e index 3 of wall obs (top wall) maps to index 0 of which 
         # action is influenced by its presence
-        enabled_actions = np.where(curr_tile_walls == 1, 0, 1)
+        # print('center_tile_walls', center_tile_walls)
+        enabled_actions = np.where(center_tile_walls == 1, 0, 1)
+        # print('enabled_actions', enabled_actions)
         enabled_actions = enabled_actions[:, action_wall_indexes]
         # now that we've permuted from obs to action arrangement, permute according to
         # to agent's facing direction.

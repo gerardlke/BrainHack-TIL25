@@ -149,90 +149,90 @@ class SelfPlayOrchestrator:
         Commences training.
         For all collections of selectable agents, build the trainable and call ray tune to optimize it.
         """
-        # we loop over agent_roles to know how many agents there are.
-        for agent_role in self.agent_roles:
-            tmp_config = deepcopy(self.config)  # deepcopy to avoid mutating underlying config, for whatever reason.
-            tmp_config.selected_agent = agent_role
-            # for now, made for the case of agent_roles being unique.
-            npcs = [1 if agent != agent_role else 0 for agent in self.agent_roles]
-            print('npcs', npcs)
-            # boolean mask of npcs: 0 represents the selected agent, 1 represents an agent controlled by the environment.
-            policies_controlled_here = [agent_role] # integer indexes of policy controlled here ( for now, just one. )
-            policies_env = [agent for agent in self.agent_roles if agent != agent_role] # integer indexes of policies controlled here
-            # apply a mask over specific policies in the config
-            trainable = create_trainable()
+        # we loop over agent_roles to know how many agents there are. no stopping condition for now.
+        while True:
+            for agent_role in self.agent_roles:
+                tmp_config = deepcopy(self.config)  # deepcopy to avoid mutating underlying config, for whatever reason.
+                tmp_config.selected_agent = agent_role
+                # for now, made for the case of agent_roles being unique.
+                npcs = [1 if agent != agent_role else 0 for agent in self.agent_roles]
+                # boolean mask of npcs: 0 represents the selected agent, 1 represents an agent controlled by the environment.
+                policies_controlled_here = [agent_role] # integer indexes of policy controlled here ( for now, just one. )
+                policies_env = [agent for agent in self.agent_roles if agent != agent_role] # integer indexes of policies controlled here
+                # apply a mask over specific policies in the config
+                trainable = create_trainable()
 
-            experiment_name = tmp_config.train.experiment_name
+                experiment_name = tmp_config.train.experiment_name
 
-            tune_config = tmp_config.tune
+                tune_config = tmp_config.tune
 
-            # first, create the hyperparam search space and population based training.
-            # this will optimize the hyperparams within each run.
-            # there are some that can be opted to be policy specific, and some that are environment specific.
-            # things that control environment run length or steps before policies train are examples of these.
-            policy_independent_hparams = {
-                "n_steps": interpret_search_space(tune_config.n_steps),
-                "frame_stack_size": interpret_search_space(tune_config.frame_stack_size),
-                "novice": interpret_search_space(tune_config.novice),
-                "num_iters": interpret_search_space(tune_config.num_iters),
-                "guard_captures": interpret_search_space(tune_config.guard_captures),
-                "scout_captured": interpret_search_space(tune_config.scout_captured),
-                "scout_recon": interpret_search_space(tune_config.scout_recon),
-                "scout_mission": interpret_search_space(tune_config.scout_mission),
-                "scout_step_empty_tile": interpret_search_space(tune_config.scout_step_empty_tile),
-                "stationary_penalty": interpret_search_space(tune_config.stationary_penalty),
-                "looking": interpret_search_space(tune_config.looking),
-                "wall_collision": interpret_search_space(tune_config.wall_collision),
-                "distance_penalty": interpret_search_space(tune_config.distance_penalty),
-            }
-            # extract only the hparams relevant to the policy(ies) we are training.
-            tune_config.policies = {
-                polid: v for polid, v in tune_config.policies.items() if polid in policies_controlled_here
-            }
-            policy_dependent_hparams = [{
-                f"{polid}/{k}": interpret_search_space(v) for k, v in policy_config.items()
-            } for polid, policy_config in tune_config.policies.items()]
+                # first, create the hyperparam search space and population based training.
+                # this will optimize the hyperparams within each run.
+                # there are some that can be opted to be policy specific, and some that are environment specific.
+                # things that control environment run length or steps before policies train are examples of these.
+                policy_independent_hparams = {
+                    "n_steps": interpret_search_space(tune_config.n_steps),
+                    "frame_stack_size": interpret_search_space(tune_config.frame_stack_size),
+                    "novice": interpret_search_space(tune_config.novice),
+                    "num_iters": interpret_search_space(tune_config.num_iters),
+                    "guard_captures": interpret_search_space(tune_config.guard_captures),
+                    "scout_captured": interpret_search_space(tune_config.scout_captured),
+                    "scout_recon": interpret_search_space(tune_config.scout_recon),
+                    "scout_mission": interpret_search_space(tune_config.scout_mission),
+                    "scout_step_empty_tile": interpret_search_space(tune_config.scout_step_empty_tile),
+                    "stationary_penalty": interpret_search_space(tune_config.stationary_penalty),
+                    "looking": interpret_search_space(tune_config.looking),
+                    "wall_collision": interpret_search_space(tune_config.wall_collision),
+                    "distance_penalty": interpret_search_space(tune_config.distance_penalty),
+                }
+                # extract only the hparams relevant to the policy(ies) we are training.
+                tune_config.policies = {
+                    polid: v for polid, v in tune_config.policies.items() if polid in policies_controlled_here
+                }
+                policy_dependent_hparams = [{
+                    f"{polid}/{k}": interpret_search_space(v) for k, v in policy_config.items()
+                } for polid, policy_config in tune_config.policies.items()]
 
-            # prune those configurations
-            tmp_config.policies = {
-                polid: v for polid, v in tmp_config.policies.items() if polid in policies_controlled_here
-            }
-            tmp_config.npcs = npcs
-            print('policies_controlled_here', policies_controlled_here)
-            print('tmp_config', tmp_config)
+                # prune those configurations
+                tmp_config.policies = {
+                    polid: v for polid, v in tmp_config.policies.items() if polid in policies_controlled_here
+                }
+                tmp_config.npcs = npcs
+                print('policies_controlled_here', policies_controlled_here)
+                print('tmp_config', tmp_config)
 
-            # merge everything
-            merged = {}
-            [merged.update(d) for d in policy_dependent_hparams]
-            merged.update(policy_independent_hparams)
+                # merge everything
+                merged = {}
+                [merged.update(d) for d in policy_dependent_hparams]
+                merged.update(policy_independent_hparams)
 
-            pbt = PopulationBasedTraining(
-                    time_attr="training_iteration",
-                    metric="all_policy_scores",
-                    mode="max",
-                    perturbation_interval=10,  # every n trials
-                    hyperparam_mutations=merged)
+                pbt = PopulationBasedTraining(
+                        time_attr="training_iteration",
+                        metric="all_policy_scores",
+                        mode="max",
+                        perturbation_interval=10,  # every n trials
+                        hyperparam_mutations=merged)
+                
+                trainable_cls = tune.with_parameters(trainable, base_config=tmp_config) # this is where the edited config
+                # gets passed to the trainable. environment is initialized within trainable.
             
-            trainable_cls = tune.with_parameters(trainable, base_config=tmp_config) # this is where the edited config
-            # gets passed to the trainable. environment is initialized within trainable.
-        
-            tuner = tune.Tuner(
-                tune.with_resources(trainable_cls, resources={"cpu": 5}),
-                tune_config=tune.TuneConfig(
-                        scheduler=pbt,
-                        num_samples=1,
-                        max_concurrent_trials=1,
-                ),
-                run_config=tune.RunConfig(
-                    name='test',
-                    storage_path=f"{tmp_config.train.root_dir}/ray_results/{experiment_name}",
-                    verbose=1,
-                    stop={"training_iteration": 1},
+                tuner = tune.Tuner(
+                    tune.with_resources(trainable_cls, resources={"cpu": 5}),
+                    tune_config=tune.TuneConfig(
+                            scheduler=pbt,
+                            num_samples=1,
+                            max_concurrent_trials=1,
+                    ),
+                    run_config=tune.RunConfig(
+                        name='test',
+                        storage_path=f"{tmp_config.train.root_dir}/ray_results/{experiment_name}",
+                        verbose=1,
+                        stop={"training_iteration": 1},
+                    )
                 )
-            )
 
-            results = tuner.fit()
-            print('get best results', results.get_best_result())
+                results = tuner.fit()
+                print('get best results', results.get_best_result())
 
 
 def create_trainable():
@@ -356,17 +356,14 @@ def create_trainable():
                     db_path=base_config.db_path,
                     save_path=f"{self.root_dir}/checkpoints/{trial_code}/{trial_name}",
                     name_prefix=f"{self.experiment_name}"
-                ) for polid in range(num_policies)
+                ) for polid in self.policies_config
             ]
             no_improvement = StopTrainingOnNoModelImprovement(
                 max_no_improvement_evals=training_config.no_improvement,
                 min_evals=int(training_config.num_evals) * 0.25,
                 verbose=1
             )
-            above_reward = StopTrainingOnRewardThreshold(
-                reward_threshold=100.0,
-                verbose=1
-            )
+
             eval_callback = CustomEvalCallback(
                 in_bits=True if eval_env_config.binary == 'binary' else False,  # TODO this is really bad code
                 log_path=self.eval_log_path,
@@ -376,7 +373,6 @@ def create_trainable():
                 training_config=training_config,
                 eval_env=eval_env,                    
                 callback_after_eval=no_improvement,
-                callback_on_new_best=above_reward,
                 deterministic=False,
             )
 
@@ -424,7 +420,6 @@ def create_trainable():
         
         def save_checkpoint(self, tmp_checkpoint_dir):
             path = os.path.join(tmp_checkpoint_dir, "state.npz")
-            print('path??', path)
             np.savez(
                 path,
                 **self.logging_dict

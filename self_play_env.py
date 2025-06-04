@@ -15,6 +15,8 @@ import pygame
 import inspect
 import hashlib
 import secrets
+import json
+import torch
 
 from rl.db.db import RL_DB
 from copy import deepcopy
@@ -34,6 +36,7 @@ from pettingzoo.utils import AgentSelector, wrappers
 from pettingzoo.utils.conversions import parallel_wrapper_fn
 from pettingzoo.utils.env import ActionType, AgentID, ObsType
 from pettingzoo.utils.wrappers.base import BaseWrapper
+from pettingzoo.utils.wrappers.base_parallel import BaseParallelWrapper
 from supersuit import frame_stack_v2
 from til_environment.flatten_dict import FlattenDictWrapper
 from til_environment.helpers import (
@@ -62,6 +65,11 @@ from supersuit.generic_wrappers.utils.base_modifier import BaseModifier
 from supersuit.generic_wrappers.utils.shared_wrapper_util import shared_wrapper
 
 from otherppos import ModifiedMaskedPPO, ModifiedPPO
+
+class DummyGymEnv(gymnasium.Env):
+    def __init__(self, observation_space, action_space):
+        self.observation_space = observation_space
+        self.action_space = action_space
 
 
 def build_env(
@@ -126,7 +134,10 @@ def build_env(
     env = wrappers.AssertOutOfBoundsWrapper(orig_env)
     # Provides a wide variety of helpful user errors
     env = wrappers.OrderEnforcingWrapper(env)
-    
+
+    env = aec_to_parallel(env)
+    env = frame_stack_v3(env, stack_size=frame_stack_size, stack_dim=0)
+    print('ENV MRO BEFORE SELFPLAY', type(env).mro())
     if self_play:
         assert npcs is not None, 'Assertion failed. Are you certain you are running selfplay.py if you are trying to conduct self play? We use an orchestrator there instead, which' \
             ' contains this missing argument.'
@@ -138,17 +149,13 @@ def build_env(
             opponent_sampling=opponent_sampling,
             db_path=db_path,
         )
-    else:
-        env = aec_to_parallel(env)
-
-    env = frame_stack_v3(env, stack_size=frame_stack_size, stack_dim=0)
+    
     env = ss.pettingzoo_env_to_vec_env_v1(env)
     env = ss.concat_vec_envs_v1(env, num_vec_envs=num_vec_envs, num_cpus=4, base_class='stable_baselines3')
 
     return orig_env, env
 
-
-class SelfPlayWrapper(aec_to_parallel_wrapper):
+class SelfPlayWrapper(BaseParallelWrapper):
 
     """
     A wrapper around pettingzoo env for selfplay. Ok not really self-play especially if you have different policies, but lets roll
@@ -222,7 +229,8 @@ class SelfPlayWrapper(aec_to_parallel_wrapper):
         self.db.shut_down_db()
         
         self.loaded_policies = {
-            policy: self.load_policy(c) for c, policy in zip(checkpoints, self.environment_policies)
+            policy: self.load_policy(c, agent) for c, policy, agent
+            in zip(checkpoints, self.environment_policies, self.environment_agents)
         }
 
     def load_policy(self, checkpoints: list):
@@ -231,15 +239,20 @@ class SelfPlayWrapper(aec_to_parallel_wrapper):
             return 'random'
         else:
             # just select the first for now
+            print('checkpoints', checkpoints)
             checkpoint = checkpoints[0]
-            hyperparams = checkpoint['hyperparameters']
+            hyperparams = json.loads(checkpoint['hyperparameters'])
             filepath = checkpoint['filepath']
+
             algo_type = eval(hyperparams['algorithm'])
             hyperparams.pop('algorithm')
-            algo_type.load(
-                path=
+            policy_type = hyperparams['policy']
+            
+            policy = algo_type.load(
+                path=filepath,
+                policy=policy_type,
             )
-
+            return policy
 
     def reset(self, seed: int | None=None, options: dict | None=None):  # type: ignore
         """
@@ -270,17 +283,25 @@ class SelfPlayWrapper(aec_to_parallel_wrapper):
                 if loaded_policy == 'random':
                     action = np.random.randint(0, 5)
                 else:
-                    obs = self.aec_env.observe(agent)
-                    if 'action_masks' not in inspect.signature(loaded_policy.forward).parameters:
-                        action, _, _ = loaded_policy.forward(obs)
+                    obs = self.modifiers[agent].get_last_obs()
+                    # print('obs before', obs, [o.shape for o in obs.values()])
+                    obs = {
+                        k: torch.Tensor(o).unsqueeze(0) for k, o in obs.items()  # very scuffed, but suspect because
+                        # the policy expects this to be [n_envs, ...] shape, have to throw in a padded dimension
+                        # maybe we shouldve kept even untrained policies to simulator, although that has its upsides and
+                        # downsides i guess
+                    }
+                    if 'action_masks' not in inspect.signature(loaded_policy.policy.forward).parameters:
+                        action, _, _ = loaded_policy.policy.forward(obs)
                     else:
                         action_masks = loaded_policy.get_action_masks(obs)
-                        action, _, _ = loaded_policy.forward(obs, action_masks=action_masks)
+                        action, _, _ = loaded_policy.policy.forward(obs, action_masks=action_masks)
 
+                if isinstance(action, torch.Tensor):
+                    action = action.item()
                 actions[agent] = action
 
         return super().step(actions)
-
 
 class modified_env(raw_env):
     """
@@ -914,7 +935,6 @@ def frame_stack_v3(env, stack_size=4, stack_dim=-1):
             tmp_stack = {}
             for k, o_space in self.old_obs_space.items():
                 tmp_stack[k] = stack_init(o_space, stack_size, stack_dim)
-
 
             self.stack = tmp_stack
 

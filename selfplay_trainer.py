@@ -30,7 +30,6 @@ from stable_baselines3.common.callbacks import BaseCallback, CallbackList, Conve
 
 from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
-from stable_baselines3.common.utils import obs_as_tensor
 from otherppos import ModifiedPPO
 from otherppos import ModifiedMaskedPPO
 
@@ -251,13 +250,10 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
 
             # agent training.
             for idx, (polid, policy) in enumerate(self.policies.items()):
-                print('total_timesteps', total_timesteps)
                 policy.num_timesteps += rollout_timesteps
-                print('num timesteps before prog update', policy.num_timesteps)
                 policy._update_current_progress_remaining(
                     policy.num_timesteps, total_timesteps  # 
                 )
-                print('num timesteps after prog update', policy.num_timesteps)
                 if log_interval is not None and policy.num_timesteps % log_interval == 0:
                     fps = int(policy.num_timesteps / (time.time() - policy.start_time))
                     policy_config = self._policies_config[polid]
@@ -339,8 +335,6 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
 
         if last_obs_buffer is None:
             last_obs_buffer = self.format_env_returns(last_obs, self.policy_agent_indexes, to_tensor=False)
-            print('self.policies', self.policies)
-            print('list(self.policies.keys())', list(self.policies.keys()))
             last_obs = self.format_env_returns(last_obs, self.policy_agent_indexes, device=self.policies[the_first_key].device, to_tensor=True)
 
         # iterate over policies, and do pre-rollout setups.
@@ -420,9 +414,9 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
             thing, score = eval_callback.on_step()
             [
                 callback.on_step(
-                    hparams=dict(self._policies_config[idx]),
+                    hparams=dict(self._policies_config[polid]),
                     score=score,
-            ) for idx, (callback, polid) in enumerate(zip(callbacks, self.policies))]
+            ) for callback, polid in zip(callbacks, self.policies)]
             if not thing:  # early stopping from StopTrainingOnNoModelImprovement
                 continue_training = False
 
@@ -556,23 +550,10 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
                 for polid in range(num_policies)
             ]
         elif isinstance(env_returns, np.ndarray):
-            # print('role indexes[polid]', [
-            #     np.take(env_returns, policy_agent_indexes[polid], axis=0) for polid in range(num_policies)
-            # ])
-            # print('role indexes[polid]', [
-            #     policy_agent_indexes[polid] for polid in range(num_policies)
-            # ])
             to_policies = [
                 mutate_func(np.take(env_returns, policy_agent_indexes[polid], axis=0), **kwargs) for polid in range(num_policies)
             ]
         elif isinstance(env_returns, list):
-            # print('env_returns', env_returns)
-            # print('role indexes[polid]', [
-            #     policy_agent_indexes[polid] for polid in range(num_policies)
-            # ])
-            # print('role indexes[polid] tolist?', [
-            #     policy_agent_indexes[polid].tolist() for polid in range(num_policies)
-            # ])
             to_policies = [
                 list(itemgetter( *(policy_agent_indexes[polid].tolist()) )(env_returns))
                 if len(policy_agent_indexes[polid]) > 1
