@@ -194,8 +194,8 @@ class CustomEvalCallback(EventCallback):
                 assert isinstance(policy_episode_lengths, dict)
                 for polid, _ in policy_episode_rewards.items():
                     self.evaluations_timesteps[polid].append(self.num_timesteps)
-                    self.evaluations_results[polid].append(policy_episode_rewards[polid])
-                    self.evaluations_length[polid].append(policy_episode_lengths[polid])
+                    self.evaluations_results[polid].append([r / self.num_opponent_combinations for r in policy_episode_rewards[polid]])
+                    self.evaluations_length[polid].append([r / self.num_opponent_combinations for r in policy_episode_lengths[polid]])
 
                 kwargs = {}
                 # Save success log if present
@@ -214,8 +214,8 @@ class CustomEvalCallback(EventCallback):
 
             # rewards postprocessing
             for polid, policy_episode_reward in policy_episode_rewards.items():
-                policy_episode_rewards[polid] = np.mean(policy_episode_reward) / self.num_opponent_combinations
-                policy_episode_lengths[polid] = np.mean(policy_episode_lengths[polid]) / self.num_opponent_combinations
+                policy_episode_rewards[polid] = np.mean(policy_episode_reward)
+                policy_episode_lengths[polid] = np.mean(policy_episode_lengths[polid]) 
 
             trainable_policy_episode_rewards = {
                 polid: mean_reward for polid, mean_reward in policy_episode_rewards.items() if polid in self.model.policies
@@ -233,7 +233,10 @@ class CustomEvalCallback(EventCallback):
             # mean reward for this policy is its score.
             
             mean_trainable_policy_rewards = np.mean([r for _, r in trainable_policy_episode_rewards.items()])
+            print('trainable_policy_episode_rewards', trainable_policy_episode_rewards)
+            print('untrainable_policy_episode_rewards', untrainable_policy_episode_rewards)
             score = mean_trainable_policy_rewards
+            print('score', score)
             self.last_mean_reward = float(mean_trainable_policy_rewards)
 
             if len(self._is_success_buffer) > 0:
@@ -467,8 +470,8 @@ class CustomEvalCallback(EventCallback):
             if render:
                 env.render()
 
-        mean_reward = [np.mean(episode_reward) for episode_reward in episode_policy_rewards]  # num_total_policies long
-        std_reward = [np.std(episode_reward) for episode_reward in episode_policy_rewards]
+        mean_reward = [np.mean(episode_reward) / self.num_opponent_combinations for episode_reward in episode_policy_rewards]  # num_total_policies long
+        std_reward = [np.std(episode_reward) / self.num_opponent_combinations for episode_reward in episode_policy_rewards]
         if reward_threshold is not None:
             assert mean_reward > reward_threshold, "Mean reward below threshold: " f"{mean_reward:.2f} < {reward_threshold:.2f}"
         if return_episode_rewards:

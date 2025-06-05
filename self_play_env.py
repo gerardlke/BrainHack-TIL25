@@ -355,36 +355,36 @@ class SelfPlayWrapper(BaseParallelWrapper):
         if not hasattr(self, 'db'):  # setup again because we dont need to deal with multiproc
             self.db = RL_DB(db_file=self.db_path)
 
-        print('self.episode_rewards', self.episode_rewards)
         # print(any(episode_reward > 0 for episode_reward in list(self.episode_rewards.values())))
         if any(episode_reward > 0 for episode_reward in list(self.episode_rewards.values())) and self.eval:
             self.db.set_up_db(timeout=100)
             
             for agent, episode_reward in self.episode_rewards.items():
                 if agent in self.agent_policy_mapping:
-                    print('agent', agent, 'episode_reward', episode_reward)
-                    print('self.agent_policy_mapping', self.agent_policy_mapping)
                     
                     policy = self.agent_policy_mapping[agent]
                     policies_desc = self.loaded_desc[policy]
                     selected_policy_idx = self.policy_pointers[policy]
                     policy_desc = policies_desc[selected_policy_idx]
 
-                    if not isinstance(policy_desc, str):
-                        
-                        prev_score = policy_desc['score'] 
+                    if not isinstance(policy_desc, str):  # make sure it is a dict and not 'random'
+                        checkpoints = self.db.get_checkpoint_by_id(id=policy_desc['id'])
+                        checkpoint = checkpoints[0]
+                        prev_score = checkpoint['score'] 
                         print('prev_score', prev_score)
                         diff = episode_reward - prev_score
                         prev_score += diff * 0.1
                         print('diff', diff)
                         print('after diff', prev_score)
                         self.db.update_score(prev_score, id=policy_desc['id'])
-                        thing = self.db.get_checkpoint_by_id(id=policy_desc['id'])
-                        print('thing after update', thing)
-
-            self.episode_rewards = defaultdict(float)
+                        checkpoints = self.db.get_checkpoint_by_id(id=policy_desc['id'])
+                        checkpoint = checkpoints[0]
+                        print('thing after update', checkpoint)
+                        print('new score', checkpoint['score'] )
             
             self.db.shut_down_db()
+
+        self.episode_rewards = defaultdict(float)
 
         return super().reset(seed, options)
 

@@ -142,7 +142,7 @@ class SelfPlayOrchestrator:
         self.hash = generate_8char_hash()
         self.config.train.root_dir = os.path.join(self.config.train.root_dir, f'Orchestrator_{self.hash}')
         self.config.db_path = os.path.join(self.config.train.root_dir, self.config.db_name)
-        self.num_loops = self.config.train.num_loops * len(self.config.policy_mapping)
+        self.num_loops = self.config.train.num_loops * len(self.config.agent_roles)
         self.agent_roles = self.config.agent_roles
 
     def commence(self):
@@ -151,7 +151,7 @@ class SelfPlayOrchestrator:
         For all collections of selectable agents, build the trainable and call ray tune to optimize it.
         """
         # we loop over agent_roles to know how many agents there are. no stopping condition for now.
-        for _ in range(self.config.num_loops):
+        for _ in range(self.num_loops):
             for agent_role in self.agent_roles:
                 tmp_config = deepcopy(self.config)  # deepcopy to avoid mutating underlying config, for whatever reason.
                 tmp_config.selected_agent = agent_role
@@ -220,8 +220,8 @@ class SelfPlayOrchestrator:
                     tune.with_resources(trainable_cls, resources={"cpu": 5}),
                     tune_config=tune.TuneConfig(
                             scheduler=pbt,
-                            num_samples=1,
-                            max_concurrent_trials=1,
+                            num_samples=10,
+                            max_concurrent_trials=2,
                     ),
                     run_config=tune.RunConfig(
                         name='test',
@@ -342,7 +342,7 @@ def create_trainable():
                 callbacks=None,
                 n_steps=training_config.n_steps,
                 use_action_masking=training_config.use_action_masking,
-                verbose=1,
+                verbose=0,
             )
             self.total_timesteps = training_config.training_iters * train_env.num_envs
             eval_freq = int(self.total_timesteps / training_config.num_evals / train_env.num_envs)
