@@ -318,8 +318,6 @@ class SelfPlayWrapper(BaseParallelWrapper):
         Return:
             - list of selected opponents, length equal to the number of policies we control
         """
-        print('-------CHOOSING POLICIES---------')
-        print('self.eval???', self.eval)
         if not self.eval:
             for polid, policies in self.loaded_policies.items():
                 random_policy = random.choice(policies)
@@ -329,7 +327,7 @@ class SelfPlayWrapper(BaseParallelWrapper):
             policy_intraidxes = list(self.policy_pointers.values())
             for (polid, policies), policy_intraidx in zip(self.loaded_policies.items(), policy_intraidxes):
                 self.episode_policies[polid] = policies[policy_intraidx]
-                print('policy_intraidx', policy_intraidx, 'of policy', polid)
+
 
             for polid, policies in self.loaded_policies.items():
                 # increment pointers.
@@ -343,7 +341,6 @@ class SelfPlayWrapper(BaseParallelWrapper):
                         self.do_eval_reset = True
                         self.policy_pointers = {polid: 0 for polid in self.environment_policies}
 
-            print('self.policy_pointers', self.policy_pointers)
                 
 
     def reset(self, seed: int | None=None, options: dict | None=None):  # type: ignore
@@ -371,16 +368,14 @@ class SelfPlayWrapper(BaseParallelWrapper):
                         checkpoints = self.db.get_checkpoint_by_id(id=policy_desc['id'])
                         checkpoint = checkpoints[0]
                         prev_score = checkpoint['score'] 
-                        print('prev_score', prev_score)
+
                         diff = episode_reward - prev_score
                         prev_score += diff * 0.1
-                        print('diff', diff)
-                        print('after diff', prev_score)
                         self.db.update_score(prev_score, id=policy_desc['id'])
-                        checkpoints = self.db.get_checkpoint_by_id(id=policy_desc['id'])
-                        checkpoint = checkpoints[0]
-                        print('thing after update', checkpoint)
-                        print('new score', checkpoint['score'] )
+                        # checkpoints = self.db.get_checkpoint_by_id(id=policy_desc['id'])
+                        # checkpoint = checkpoints[0]
+                        # print('thing after update', checkpoint)
+                        # print('new score', checkpoint['score'] )
             
             self.db.shut_down_db()
 

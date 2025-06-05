@@ -214,8 +214,8 @@ class CustomEvalCallback(EventCallback):
 
             # rewards postprocessing
             for polid, policy_episode_reward in policy_episode_rewards.items():
-                policy_episode_rewards[polid] = np.mean(policy_episode_reward)
-                policy_episode_lengths[polid] = np.mean(policy_episode_lengths[polid]) 
+                policy_episode_rewards[polid] = np.mean(policy_episode_reward) / self.num_opponent_combinations
+                policy_episode_lengths[polid] = np.mean(policy_episode_lengths[polid]) / self.num_opponent_combinations 
 
             trainable_policy_episode_rewards = {
                 polid: mean_reward for polid, mean_reward in policy_episode_rewards.items() if polid in self.model.policies

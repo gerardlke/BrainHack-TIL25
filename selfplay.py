@@ -232,7 +232,7 @@ class SelfPlayOrchestrator:
                 )
 
                 results = tuner.fit()
-                print('get best results', results.get_best_result())
+                # print('get best results', results.get_best_result())
 
 
 def create_trainable():
