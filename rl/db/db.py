@@ -171,6 +171,23 @@ class RL_DB:
             print(f"No checkpoints found in the database for policy index {policy}.")
         return []
 
+    def update_score(self, score, id):
+        query = f"""
+        UPDATE {self.table_name}
+        SET score = ?
+        WHERE id = ?
+        """
+        self.execute_query(query, (score, id))
+
+    def get_checkpoint_by_id(self, id):
+        query = f"""
+        SELECT * FROM {self.table_name}
+        WHERE id = ?
+        LIMIT 1;
+        """
+        checkpoints = self.execute_query_and_return(query, (id,))
+        return checkpoints
+
 
 # Sample code
 if __name__ == "__main__":

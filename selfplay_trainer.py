@@ -119,7 +119,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         self.verbose = verbose
         self._logger = None
         env_fn = lambda: DummyGymEnv(self.observation_space, self.action_space)
-        self.dummy_envs = [DummyVecEnv([env_fn] * len(policy_index)) for policy_index in self.policy_agent_indexes]
+        self.dummy_envs = [DummyVecEnv([env_fn] * len(policy_index)) for _, policy_index in self.policy_agent_indexes.items()]
         # this is a wrapper class, so it will not hold any states like
         # buffer_size, or action_noise. pass those straight to DQN.
 
@@ -249,7 +249,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
             self.num_timesteps += rollout_timesteps
 
             # agent training.
-            for idx, (polid, policy) in enumerate(self.policies.items()):
+            for polid, policy in self.policies.items():
                 policy.num_timesteps += rollout_timesteps
                 policy._update_current_progress_remaining(
                     policy.num_timesteps, total_timesteps  # 
@@ -264,7 +264,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
                     policy.logger.record(
                         "time/iterations", policy.num_timesteps, exclude="tensorboard"
                     )
-                    concat = np.concatenate(total_rewards[idx])
+                    concat = np.concatenate(total_rewards[polid])
                     mean_policy_reward = (np.sum(concat) / len(concat)).item()
                     policy.logger.record(
                         f"rollout/mean_policy_reward_polid_{polid}", mean_policy_reward,
@@ -327,7 +327,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         all_log_probs = {}
         all_action_masks = {}
         last_values = {}
-        total_rewards = [[] for _ in range(self.num_policies)] 
+        total_rewards = {polid: [] for polid, policy in self.policies.items()}
         
         n_steps = 0
         step_actions = np.zeros(self.total_envs, dtype=np.int64)
@@ -338,7 +338,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
             last_obs = self.format_env_returns(last_obs, self.policy_agent_indexes, device=self.policies[the_first_key].device, to_tensor=True)
 
         # iterate over policies, and do pre-rollout setups.
-        for idx, ((_, policy), policy_index) in enumerate(zip(self.policies.items(), self.policy_agent_indexes)):
+        for idx, ((_, policy), (_, policy_index)) in enumerate(zip(self.policies.items(), self.policy_agent_indexes.items())):
             num_envs = len(policy_index)
             policy.policy.set_training_mode(False)
             policy.n_steps = 0
@@ -387,17 +387,15 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
                         clipped_actions = np.array(
                             [action.item() for action in clipped_actions]
                         )
-                    all_clipped_actions[idx] = clipped_actions
+                    all_clipped_actions[polid] = clipped_actions
             
             # TODO: SETTLE HOW WE PASS TO STEP
-            print('all_clipped_actions', all_clipped_actions)
             for polid, actions in all_clipped_actions.items():
                 policy_agent_index = self.policy_agent_indexes[polid]
-                print('policy_agent_index', policy_agent_index)
                 step_actions[policy_agent_index] = actions
-            print('all step_actions', step_actions)
 
             # actually step in the environment
+            # print('step_actions', step_actions)
             obs, rewards, dones, infos = self.env.step(step_actions)
 
             all_curr_obs = self.format_env_returns(obs, policy_agent_indexes=self.policy_agent_indexes, to_tensor=True, device=self.policies[the_first_key].device)
@@ -529,8 +527,11 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
 
         Args:
             env_returns: dict[str, np.ndarray] | np.ndarray | list. We expect the first dimension of these arrays / length of list to be (num_envs * num_agents).
-            policy_agent_indexes: list of list of integer, demoninating the indexes of the policy (corresponding to the list index)
-                e.g [[1, 2, 3, 5, 6, 7], [0, 4]]  # first 6 map to a policy 0, second maps to a policy 1
+            policy_agent_indexes: dict of int -> list of integer, demoninating the indexes of the policy (corresponding to the list index)
+                e.g {
+                    0: [1, 2, 3, 5, 6, 7], 
+                    1: [0, 4],
+                }  # first 6 map to a policy 0, second maps to a policy 1
             to_tensor: Return as tensors
             device: what device to map tensor to
         Returns:
@@ -578,15 +579,16 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         From this, create a nested list of n policies long, each list has indexes
         of the vectorized environments index.
         e.g n_envs = 2, policy mapping as above.
-        Output will be:
-        [
-            [1, 2, 3, 5, 6, 7], [0, 4]
-        ].
+        Output will be a dictionary:
+        {
+            0: [1, 2, 3, 5, 6, 7], 
+            1: [0, 4],
+        }
         """
         n_policy_mapping = np.array(policy_mapping * n_envs)
-        policy_indexes = [
-            np.where(n_policy_mapping == polid)[0] for polid in np.unique(n_policy_mapping)
-        ]
+        policy_indexes = {
+            polid: np.where(n_policy_mapping == polid)[0] for polid in np.unique(n_policy_mapping)
+        }
 
         return policy_indexes
 

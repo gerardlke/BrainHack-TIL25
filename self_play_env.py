@@ -113,7 +113,7 @@ def build_env(
     novice = _env_config.pop('novice', True)
     debug = _env_config.pop('debug', False),
     frame_stack_size = _env_config.pop('frame_stack_size', 4)
-    opponent_sampling  = _env_config.pop('opponent_sampling', 'random')
+    top_opponents  = _env_config.pop('top_opponents', 1)
     collisions = _env_config.pop('collisions', True)
     viewcone_only = _env_config.pop('viewcone_only', False)
 
@@ -138,7 +138,6 @@ def build_env(
 
     env = aec_to_parallel(env)
     env = frame_stack_v3(env, stack_size=frame_stack_size, stack_dim=0)
-    print('ENV MRO BEFORE SELFPLAY', type(env).mro())
     if self_play:
         assert npcs is not None, 'Assertion failed. Are you certain you are running selfplay.py if you are trying to conduct self play? We use an orchestrator there instead, which' \
             ' contains this missing argument.'
@@ -147,7 +146,7 @@ def build_env(
             policy_mapping=policy_mapping,
             agent_roles=agent_roles,
             npcs=npcs,
-            opponent_sampling=opponent_sampling,
+            top_opponents=top_opponents,
             db_path=db_path,
         )
     
@@ -193,11 +192,17 @@ class SelfPlayWrapper(BaseParallelWrapper):
             the final actions before calling step.
         - npcs: Defined at initialization, what agents will be controlled by the environment. Requires this so
             it knows what policies to load, which it can then map to which agent roles.
-        - opponent_sampling: Strategy on how we load opponents each time environment resets. TODO integrate with gerard
         DB.
         - db_path: Path to gerard db
     """
-    def __init__(self, env, policy_mapping, agent_roles, npcs, opponent_sampling, db_path):
+    def __init__(self,
+        env,
+        policy_mapping,
+        agent_roles,
+        npcs,
+        db_path,
+        top_opponents
+    ):
         super().__init__(env)
         self.db_path = db_path
         # db interface (gerard)
@@ -205,7 +210,7 @@ class SelfPlayWrapper(BaseParallelWrapper):
 
         self.policy_mapping = policy_mapping
         self.agent_roles = agent_roles
-        self.opponent_sampling = opponent_sampling
+        # self.opponent_sampling = opponent_sampling
         # somethign about loading best models here
         assert max(npcs) == 1 and min(npcs) == 0, 'Assertion failed, npcs list recieved by SelfPlayWrapper reset is not a boolean mask.'
         assert npcs.count(0) == 1, 'Assertion failed, npcs list recieved by SelfPlayWrapper contains more than one element 1; we only support ' \
@@ -220,23 +225,25 @@ class SelfPlayWrapper(BaseParallelWrapper):
         }  # lookup table, to see what agent maps to what policy id.
 
         self.loaded_policies = None
-        self.opponent_sampling = opponent_sampling
-
         self.db.set_up_db(timeout=100)
 
-        checkpoints = [
-            self.db.get_checkpoint_by_policy(policy, shuffle=True) for policy in self.environment_policies
-        ]
-
+        # get all the currently best policies.
+        self.top_opponents = top_opponents  # temporarily hardcode to 1 rn for debugging
+        self.loaded = {
+            polid: self.load_policies(self.db.get_checkpoint_by_policy(polid, shuffle=True)) for polid
+            in self.environment_policies
+        }  # load all policies at the start and then just select them later
+    
+        self.loaded_policies = {
+            polid: loads[0] for polid, loads
+            in self.loaded.items()
+        }
+        self.loaded_desc = {
+            polid: loads[1] for polid, loads
+            in self.loaded.items()
+        }
         self.db.shut_down_db()
         del self.db  # cant subprocess sqlite connection in vectorized env
-        
-        # get all the currently best policies.
-        self.top_opponents = 3  # temporarily hardcode to 3 rn
-        self.loaded_policies = {
-            polid: self.load_policies(c) for c, polid
-            in zip(checkpoints, self.environment_policies)
-        }  # load all policies at the start and then just select them later
 
         self.eval = self.aec_env.eval
         self.do_eval_reset = False
@@ -248,6 +255,9 @@ class SelfPlayWrapper(BaseParallelWrapper):
         # ok we will choose some policies to start with
         self.choose_policies()
         # now self.episode_policies should be populated.
+
+
+        self.episode_rewards = defaultdict(float)  # dictionary to store the current episode rewards of each agent.
 
         # ----------------------- DEPRECEATED (BUT NOT DELETED) --------------------------
         # Generate a random 32-byte (256-bit) value
@@ -265,13 +275,18 @@ class SelfPlayWrapper(BaseParallelWrapper):
     
     def load_policies(self, checkpoints: list):
         all_loaded = []
+        all_desc = []  # purely for display now
         if len(checkpoints) == 0:
             # if no checkpoint, default to random behaviour.
             [all_loaded.append('random') for _ in range(self.top_opponents)]
+            [all_desc.append('random') for _ in range(self.top_opponents)]
         else:
             for checkpoint in checkpoints[:self.top_opponents]:
                 hyperparams = json.loads(checkpoint['hyperparameters'])
                 filepath = checkpoint['filepath']
+
+                _checkpoint = deepcopy(dict(checkpoint))
+                all_desc.append(_checkpoint)
 
                 algo_type = eval(hyperparams['algorithm'])
                 hyperparams.pop('algorithm')
@@ -282,8 +297,8 @@ class SelfPlayWrapper(BaseParallelWrapper):
                     policy=policy_type,
                 )
                 all_loaded.append(policy)
-        
-        return all_loaded
+                
+        return all_loaded, all_desc
     
     def reset_and_choose(self):
         """
@@ -311,12 +326,16 @@ class SelfPlayWrapper(BaseParallelWrapper):
                 self.episode_policies[polid] = random_policy
 
         else:
+            policy_intraidxes = list(self.policy_pointers.values())
+            for (polid, policies), policy_intraidx in zip(self.loaded_policies.items(), policy_intraidxes):
+                self.episode_policies[polid] = policies[policy_intraidx]
+                print('policy_intraidx', policy_intraidx, 'of policy', polid)
+
             for polid, policies in self.loaded_policies.items():
                 # increment pointers.
-                policy_intraidx = self.policy_pointers[polid]  # within list of policies, which to pick?
-                # choose before doing increment logic.
                 if self.policy_pointers[polid] != len(policies) - 1:
                     self.policy_pointers[polid] += 1
+                    break
                 else:   # e.g top opponents 3, we only have until index 2 to pick, so reset for that polid
                     self.policy_pointers[polid] = 0
                     next_polid = self.next_highest_key(self.policy_pointers, polid)
@@ -324,26 +343,49 @@ class SelfPlayWrapper(BaseParallelWrapper):
                         self.do_eval_reset = True
                         self.policy_pointers = {polid: 0 for polid in self.environment_policies}
 
-                print('policy_intraidx', policy_intraidx, 'of policy', polid)
-                policy = policies[policy_intraidx]
-                self.episode_policies[polid] = policy
+            print('self.policy_pointers', self.policy_pointers)
+                
 
     def reset(self, seed: int | None=None, options: dict | None=None):  # type: ignore
         """
         Wraps around super class reset.
-
-        If not evaluating, normal reset.
-        If evaluating, do a true reset where all pointers are reset.
+        Will connect to DB and update its score values, for each policy that is being evaluated.
+        Uses a system of 'score difference times 10%' to change the score of the policy.
         """
-        # if self.eval and self.do_eval_reset:
-        #     self.do_eval_reset = False
-            
-        # if all(p == self.top_opponents for p in self.policy_pointers):
-        #     self.do_eval_reset = True
-        #     self.policy_pointers = [0] * len(self.environment_policies)  # reset pointers
+        if not hasattr(self, 'db'):  # setup again because we dont need to deal with multiproc
+            self.db = RL_DB(db_file=self.db_path)
 
-        # self.choose_policies()
-        
+        print('self.episode_rewards', self.episode_rewards)
+        # print(any(episode_reward > 0 for episode_reward in list(self.episode_rewards.values())))
+        if any(episode_reward > 0 for episode_reward in list(self.episode_rewards.values())) and self.eval:
+            self.db.set_up_db(timeout=100)
+            
+            for agent, episode_reward in self.episode_rewards.items():
+                if agent in self.agent_policy_mapping:
+                    print('agent', agent, 'episode_reward', episode_reward)
+                    print('self.agent_policy_mapping', self.agent_policy_mapping)
+                    
+                    policy = self.agent_policy_mapping[agent]
+                    policies_desc = self.loaded_desc[policy]
+                    selected_policy_idx = self.policy_pointers[policy]
+                    policy_desc = policies_desc[selected_policy_idx]
+
+                    if not isinstance(policy_desc, str):
+                        
+                        prev_score = policy_desc['score'] 
+                        print('prev_score', prev_score)
+                        diff = episode_reward - prev_score
+                        prev_score += diff * 0.1
+                        print('diff', diff)
+                        print('after diff', prev_score)
+                        self.db.update_score(prev_score, id=policy_desc['id'])
+                        thing = self.db.get_checkpoint_by_id(id=policy_desc['id'])
+                        print('thing after update', thing)
+
+            self.episode_rewards = defaultdict(float)
+            
+            self.db.shut_down_db()
+
         return super().reset(seed, options)
 
 
@@ -362,6 +404,9 @@ class SelfPlayWrapper(BaseParallelWrapper):
 
         We opt to not post done=1 in our returns, until ALL best opponents have been evaluated against. This means that when stepping, if
         the underlying env tells us done=1, we check for remaining opponents to evaluate against. Once we have no more, then set done=1.
+        
+        We also have to update ELO of each policy within this function, since the knowledge of what policies
+        are being evaluated is contained within the environment. This feels wrong but oh well, what todo.
         """
         for agent in actions:
             if agent in self.environment_agents:
@@ -390,18 +435,25 @@ class SelfPlayWrapper(BaseParallelWrapper):
         
         # i have no clue why there are two dones, but wokie
         observations, rewards, terms, truncs, infos = super().step(actions)  # type: ignore
+        for agent, reward in rewards.items():
+            self.episode_rewards[agent] += reward
+            # print('added reward', reward, self.episode_rewards)
 
         # intercept terms/truncs. if any True, it means we are doing a reset. choose policies first, to see if we should do a true reset.
         # i.e TRULY return True to the vector env wrapper around this, thereby returning True to the simulator or callback.
         if any(list(terms.values())) or any(list(truncs.values())):
             self.reset_and_choose()  # within this is where self.do_eval_reset is called.
-
+        # print('curr eval rewards', rewards)
+        # print('curr evaluated policies', {
+        #     polid: desc[self.policy_pointers[polid]] for polid, desc in self.loaded_desc.items()
+        # })
         if self.eval:  # first if eval mode, set it to False.
             terms = {k: False for k in terms}
             truncs = {k: False for k in truncs}
-            if self.do_eval_reset:  # then check for eval reset.
-                terms = {k: True for k in terms}
+            if self.do_eval_reset:  # then check for and do eval reset.
+                terms = {k: True for k in terms}  # commit sewer side
                 truncs = {k: True for k in truncs}
+
                 self.do_eval_reset = False
 
         return observations, rewards, terms, truncs, infos
