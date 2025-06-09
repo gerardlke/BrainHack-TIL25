@@ -15,7 +15,10 @@ DEFAULT_DB_FILE = "RL.db"
 DB_TABLE = "checkpoints"
 
 class RL_DB:
-    def __init__(self, db_file=DEFAULT_DB_FILE, table_name=DB_TABLE, verbose=False):
+    def __init__(self, db_file=DEFAULT_DB_FILE,
+                 table_name=DB_TABLE, verbose=False,
+                 num_roles=4,):
+        self.num_roles = num_roles
         self.connection = None
         self.db_file = db_file
         self.table_name = table_name 
@@ -89,22 +92,37 @@ class RL_DB:
         except Error as e:
             print(f"Error reading query: '{e}'")
         return result
+    
+    def append_scores_string(self, query):
+        
+
+        return query
 
     # --- Database Operations ---
 
     def create_table(self):
-        """Creates the checkpoint table in the database if the table doesn't already exist."""
+        """
+        Creates the checkpoint table in the database if the table doesn't already exist.
+
+        Dynamically creates n score columns for every role that exists in our little game.
+        """
         query = f"""
         CREATE TABLE IF NOT EXISTS {self.table_name} (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             filepath TEXT NOT NULL UNIQUE,
             timestamp DATETIME NOT NULL,
             policy_id INTEGER NOT NULL,
-            hyperparameters JSON,
-            score REAL NOT NULL
-        );
-        """
+            hyperparameters JSON,"""
+        
+        for role in range(self.num_roles):
+            query += f"score_{role} REAL NOT NULL DEFAULT 0"
+            if role < (self.num_roles - 1):
+                query += ','
+        
+        query += ");"
+
         res = self.execute_query(query)
+
         if res is not None:
             if self.verbose:
                 print(f'Table {self.table_name} set up successfully.')
@@ -118,21 +136,43 @@ class RL_DB:
                 filepath=checkpoint.get('filepath'),
                 policy_id=checkpoint.get('policy_id'),
                 hyperparameters=checkpoint.get('hyperparameters'),
-                score=checkpoint.get('score'),
+                scores=checkpoint.get('scores'),
+                roles=checkpoint.get('roles'),
                 # best_opponents=checkpoint.get('best_opponents')
             )
 
-    def add_checkpoint(self, filepath='', policy_id=0, hyperparameters={}, score=0.0):  # TODO: Add in all fields once table fields are finalised
+    def add_checkpoint(self,
+                       filepath,
+                       policy_id,
+                       roles: list,
+                       scores: list,
+                       hyperparameters={},
+                ):  # TODO: Add in all fields once table fields are finalised
+        """
+        Adds brand new checkpoint to DB. 
+        roles and scores are expected to be a list
+        
+        """
+
+        assert all(role in range(self.num_roles) for role in roles), 'DB Assertion failed. A role was given to add_checkpoint that is not in the roles it accounts for.'
         """Adds a new checkpoint to the checkpoints table."""
         query = f"""
         INSERT INTO {DB_TABLE} (
-            filepath, timestamp, policy_id, hyperparameters, score
-        )
-        VALUES (?, ?, ?, ?, ?);
+            filepath, timestamp, policy_id, hyperparameters, 
         """
-        last_id = self.execute_query(query, (filepath, datetime.now().isoformat(), policy_id, json.dumps(hyperparameters), score))
+        # TODO: resolve how to throw in all the scores. This is a DB-Simulator issue.
+        score_inserts = ','.join([f'score_{role}' for role in roles])
+
+        query += score_inserts + ')'
+
+        query += """
+        VALUES (?, ?, ?, ?,
+        """ + ','.join(['?'] * len(roles)) + ');'
+
+        
+        last_id = self.execute_query(query, (filepath, datetime.now().isoformat(), policy_id, json.dumps(hyperparameters), *scores))
         if last_id is not None:
-            print(f"Added checkpoint: ({filepath}, {policy_id}, {hyperparameters}, {score})")
+            print(f"Added checkpoint: ({filepath}, {policy_id}, {hyperparameters}, {scores})")
         
     def delete_all_checkpoints(self):
         """Deletes all checkpoints from the table."""
@@ -155,12 +195,30 @@ class RL_DB:
         print("No checkpoints found in the database.")
         return []
 
-    def get_checkpoint_by_policy(self, policy, shuffle=False):
-        """Retrieves single checkpoint from the checkpoints table by index, either best index or ."""
+    def get_checkpoint_by_role(self, policy, role, shuffle=False):
+        """
+        Retrieves single checkpoint from the checkpoints table by role score. """
         query = f"""
         SELECT * FROM {self.table_name}
         WHERE policy_id = ?
-        ORDER BY score DESC;
+        ORDER BY score_{role} DESC;
+        """
+        checkpoints = self.execute_query_and_return(query, (policy,))
+        if checkpoints:
+            if shuffle:
+                random.shuffle(checkpoints)
+            return checkpoints
+        if self.verbose:
+            print(f"No checkpoints found in the database for policy index {policy}.")
+        return []
+    
+    def get_checkpoint_by_policy(self, policy, shuffle=False):
+        """
+        Retrieves single checkpoint from the checkpoints table.
+        """
+        query = f"""
+        SELECT * FROM {self.table_name}
+        WHERE policy_id = ?
         """
         checkpoints = self.execute_query_and_return(query, (policy,))
         if checkpoints:
@@ -171,10 +229,10 @@ class RL_DB:
             print(f"No checkpoints found in the database for policy index {policy}.")
         return []
 
-    def update_score(self, score, id):
+    def update_score(self, score, role, id):
         query = f"""
         UPDATE {self.table_name}
-        SET score = ?
+        SET score_{role} = ?
         WHERE id = ?
         """
         self.execute_query(query, (score, id))

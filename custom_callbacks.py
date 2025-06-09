@@ -4,6 +4,7 @@ import warnings
 import inspect
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Callable, Optional, Union
+from utils import generate_policy_agent_indexes
 
 import gymnasium as gym
 from gymnasium.spaces import Box, Discrete
@@ -20,7 +21,7 @@ from rl.db.db import RL_DB
 
 class CustomEvalCallback(EventCallback):
     """
-    Callback for evaluating an agent.
+    Callback for evaluating. Hardcoded to only work for selfplay for now.
 
     .. warning::
 
@@ -73,6 +74,7 @@ class CustomEvalCallback(EventCallback):
             - policy_mapping: the policy each agent maps to: e.g [1, 0, 0, 0]
         """
         super().__init__(callback_after_eval, verbose=verbose)
+        self.selfplay = True
         self.in_bits = in_bits
         self.callback_on_new_best = callback_on_new_best
         if self.callback_on_new_best is not None:
@@ -116,12 +118,10 @@ class CustomEvalCallback(EventCallback):
 
         self.evaluate_policy = self.custom_marl_evaluate_policy
 
-        vec_policy_mapping = np.array(policy_mapping * eval_env_config.num_vec_envs)
-        self.policy_agent_indexes = {
-            polid: np.where(vec_policy_mapping == polid)[0] for polid in np.unique(vec_policy_mapping)
-        }
-
         self.num_vec_envs = self.eval_env_config.num_vec_envs
+        self.policy_agent_indexes = generate_policy_agent_indexes(
+            selfplay=self.selfplay, n_envs=self.num_vec_envs, policy_mapping=policy_mapping
+        )
         self.num_total_policies = len(self.policy_agent_indexes)
 
 
@@ -157,12 +157,12 @@ class CustomEvalCallback(EventCallback):
             if maybe_is_success is not None:
                 self._is_success_buffer.append(maybe_is_success)
 
-    def _on_step(self) -> (bool, float | None):
+    def _on_step(self) -> (bool, float | None): # type: ignore
         continue_training = True
         score = None
+        policy_episode_rewards = None
         if self.eval_freq > 0 and self.n_calls % self.eval_freq == 0:
-            self.num_opponent_policies = (len(self.policy_agent_indexes) - len(self.model.policies))
-            self.num_opponent_combinations = self.num_opponent_policies ** self.eval_env_config.top_opponents
+            self.num_opponent_combinations = self.eval_env_config.top_opponents ** self.eval_env_config.top_opponents
 
             # Sync training and eval env if there is VecNormalize
             if self.model.get_vec_normalize_env() is not None:
@@ -213,30 +213,28 @@ class CustomEvalCallback(EventCallback):
                     )
 
             # rewards postprocessing
+            mean_policy_episode_rewards, mean_policy_episode_lengths = {}, {}
             for polid, policy_episode_reward in policy_episode_rewards.items():
-                policy_episode_rewards[polid] = np.mean(policy_episode_reward) / self.num_opponent_combinations
-                policy_episode_lengths[polid] = np.mean(policy_episode_lengths[polid]) / self.num_opponent_combinations 
+                mean_policy_episode_rewards[polid] = np.mean(policy_episode_reward) / self.num_opponent_combinations
+                mean_policy_episode_lengths[polid] = np.mean(policy_episode_lengths[polid]) / self.num_opponent_combinations 
 
             trainable_policy_episode_rewards = {
-                polid: mean_reward for polid, mean_reward in policy_episode_rewards.items() if polid in self.model.policies
+                polid: mean_reward for polid, mean_reward in mean_policy_episode_rewards.items() if polid in self.model.policies
             }
             untrainable_policy_episode_rewards = {
-                polid: mean_reward for polid, mean_reward in policy_episode_rewards.items() if polid not in self.model.policies
+                polid: mean_reward for polid, mean_reward in mean_policy_episode_rewards.items() if polid not in self.model.policies
             }
                 
             # Add to current Logger
             [self.logger.record(f"eval_trainable_policy/polid_{polid}_mean_reward", float(mean_reward)) for polid, mean_reward in trainable_policy_episode_rewards.items()]
             [self.logger.record(f"eval_untrainable_policy/polid_{polid}_mean_reward", float(mean_reward)) for polid, mean_reward in untrainable_policy_episode_rewards.items()]
-            [self.logger.record(f"eval/polid_{polid}_mean_lengths", float(mean_lengths)) for polid, mean_lengths in policy_episode_lengths.items()]
+            [self.logger.record(f"eval/polid_{polid}_mean_lengths", float(mean_lengths)) for polid, mean_lengths in mean_policy_episode_lengths.items()]
             # [self.logger.record(f"eval/role_{roid}_mean_reward", float(mean_reward)) for roid, mean_reward in enumerate(roles_episode_rewards)]
             
             # mean reward for this policy is its score.
-            
             mean_trainable_policy_rewards = np.mean([r for _, r in trainable_policy_episode_rewards.items()])
-            print('trainable_policy_episode_rewards', trainable_policy_episode_rewards)
-            print('untrainable_policy_episode_rewards', untrainable_policy_episode_rewards)
             score = mean_trainable_policy_rewards
-            print('score', score)
+
             self.last_mean_reward = float(mean_trainable_policy_rewards)
 
             if len(self._is_success_buffer) > 0:
@@ -263,7 +261,7 @@ class CustomEvalCallback(EventCallback):
             if self.callback is not None:
                 continue_training = continue_training and self._on_event()
 
-        return continue_training, score
+        return continue_training, policy_episode_rewards
 
     def update_child_locals(self, locals_: dict[str, Any]) -> None:
         """
@@ -329,12 +327,11 @@ class CustomEvalCallback(EventCallback):
         all_clipped_actions = {polid: 0 for polid in self.policy_agent_indexes}
         all_actions = {polid: 0 for polid in self.policy_agent_indexes}
 
-        step_actions = np.zeros(total_envs, dtype=np.int64)
+        step_actions = np.full(total_envs, -1)
             
         episode_counts = np.zeros(total_envs, dtype="int")
         # n_eval_episodes are episodes per num_agents times total_envs
         episode_count_targets = np.array([n_eval_episodes for _ in range(total_envs)], dtype="int")
-        episode_starts = np.ones((total_envs,), dtype=bool)
 
         # per policy per env per agent, rewards are aggregated.
         # btw n_envs is already the num_vec_envs * num_agents, cuz supersuit and parallel env are nice like that
@@ -357,14 +354,14 @@ class CustomEvalCallback(EventCallback):
         )
 
         states = None
+        combined_indexes = [item for sublist in self.policy_agent_indexes.values() for item in sublist]
         # predict for each policy
-        while (episode_counts < episode_count_targets).any():
+        while (episode_counts[combined_indexes] < episode_count_targets[combined_indexes]).any():
             for polid, policy in simulator.policies.items():
                 if 'action_masks' not in inspect.signature(policy.predict).parameters:
                     actions, states = policy.predict(
                         last_obs[polid],  # type: ignore[arg-type]
                         state=states,
-                        episode_start=episode_starts,
                         deterministic=deterministic,
                     )
                 else:
@@ -373,7 +370,6 @@ class CustomEvalCallback(EventCallback):
                     actions, states = policy.predict(
                             last_obs[polid],  # type: ignore[arg-type]
                             state=states,
-                            episode_start=episode_starts,
                             deterministic=deterministic,
                             action_masks=action_masks
                         )
@@ -436,15 +432,15 @@ class CustomEvalCallback(EventCallback):
                     current_reward[enum] += all_reward[enum]
                     current_length[enum] += 1
 
+                    done = all_done[enum]
+                    info = all_info[enum]
+
+                    if callback is not None:
+                        callback(locals(), globals())
+
+                    # only if this env hasnt been ended more than target number of times, then 
+                    # count the outcomes towards final policy evaluation.
                     if episode_counts[env_index] < episode_count_targets[env_index]:
-                        # unpack values so that the callback can access the local variables
-                        done = all_done[enum]
-                        info = all_info[enum]
-                        episode_starts[env_index] = done
-
-                        if callback is not None:
-                            callback(locals(), globals())
-
                         if done:
                             if is_monitor_wrapped:
                                 # Atari wrapper can send a "done" signal when
@@ -462,6 +458,7 @@ class CustomEvalCallback(EventCallback):
                                 episode_reward.append(current_reward[enum])  # add the current episode reward to cache of all
                                 episode_length.append(current_length[enum])
                                 episode_counts[env_index] += 1
+                            
                             current_reward[enum] = 0
                             current_length[enum] = 0
 
@@ -469,9 +466,9 @@ class CustomEvalCallback(EventCallback):
 
             if render:
                 env.render()
-
-        mean_reward = [np.mean(episode_reward) / self.num_opponent_combinations for episode_reward in episode_policy_rewards]  # num_total_policies long
-        std_reward = [np.std(episode_reward) / self.num_opponent_combinations for episode_reward in episode_policy_rewards]
+        print('episode_policy_rewards', episode_policy_rewards)
+        mean_reward = [np.mean(episode_reward) / self.num_opponent_combinations for polid, episode_reward in episode_policy_rewards.items()]  # num_total_policies long
+        std_reward = [np.std(episode_reward) / self.num_opponent_combinations for polid, episode_reward in episode_policy_rewards.items()]
         if reward_threshold is not None:
             assert mean_reward > reward_threshold, "Mean reward below threshold: " f"{mean_reward:.2f} < {reward_threshold:.2f}"
         if return_episode_rewards:
@@ -493,7 +490,7 @@ class CustomCheckpointCallback(CheckpointCallback):
         self.polid = polid
         self.save_path = os.path.join(self.save_path, f"polid_{self.polid}")
 
-    def on_step(self, hparams, score) -> bool:
+    def on_step(self, hparams, score_dict) -> bool:
         """
         This method will be called by the model after each call to ``env.step()``.
 
@@ -505,7 +502,7 @@ class CustomCheckpointCallback(CheckpointCallback):
         self.n_calls += 1
         self.num_timesteps = self.model.num_timesteps
 
-        return self._on_step(hparams, score)
+        return self._on_step(hparams, score_dict)
 
     def _checkpoint_path(self, checkpoint_type: str = "", extension: str = "") -> str:
         """
@@ -518,21 +515,34 @@ class CustomCheckpointCallback(CheckpointCallback):
         """
         return os.path.join(self.save_path, f"{self.name_prefix}_{checkpoint_type}{self.num_timesteps}_steps.{extension}")
 
-    def _on_step(self, hparams, score) -> bool:
-        if self.n_calls % self.save_freq == 0:
-            if score is None:
-                score = 0
+    def _on_step(self, hparams, score_dict: dict | None = None) -> bool:
+        """
+        Args:
+            hparams: dict of hyperparameters, for logging sake
+            score_dict: dict structured as such:
+            {
+                'score_0': 74,
+                'score_1': 0,
+                'score_3': 0, 
+            }
+            where each key in score_{idx} represents the score achieved when playing role idx.
+            may not need to have all role indexes, we auto-fill them up in the DB as zero.
+        """
+        if (self.n_calls % self.save_freq == 0) and score_dict is not None:
             model_path = self._checkpoint_path(extension="zip")
             self.model.save(model_path)
             # here, try to instantiate a db connection.
             self.db.set_up_db(timeout=100)
+            roles = list(score_dict.keys())
+            scores = list(score_dict.values())
             checkpoints = [
-                {
-                    'filepath': model_path,
-                    'policy_id': self.polid,
-                    'hyperparameters': hparams,
-                    'score': score, 
-                }
+                dict(
+                    filepath=model_path,
+                    policy_id=self.polid,
+                    hyperparameters=hparams,
+                    roles=roles,
+                    scores=scores,
+                )
             ]
             self.db.add_checkpoints(checkpoints=checkpoints)
             self.db.shut_down_db()  # release lock for other checkpointers

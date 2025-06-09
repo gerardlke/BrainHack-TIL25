@@ -139,6 +139,9 @@ class SelfPlayOrchestrator:
         Most important configurations are what agents we are training, and what agents are part of the environment.
         """
         self.config = config
+        assert len(self.config.agent_roles) == len(self.config.policy_mapping), 'Assertion failed. agent_roles in the config '\
+            'must have the same length as policy_mapping in the config.'
+        self.policy_mapping = config.policy_mapping
         self.hash = generate_8char_hash()
         self.config.train.root_dir = os.path.join(self.config.train.root_dir, f'Orchestrator_{self.hash}')
         self.config.db_path = os.path.join(self.config.train.root_dir, self.config.db_name)
@@ -148,18 +151,27 @@ class SelfPlayOrchestrator:
     def commence(self):
         """
         Commences training.
-        For all collections of selectable agents, build the trainable and call ray tune to optimize it.
+        For all collections of selectable policies, build the trainable and call ray tune to optimize it.
         """
         # we loop over agent_roles to know how many agents there are. no stopping condition for now.
         for _ in range(self.num_loops):
-            for agent_role in self.agent_roles:
+            for polid in list(set(self.policy_mapping)):
                 tmp_config = deepcopy(self.config)  # deepcopy to avoid mutating underlying config, for whatever reason.
-                tmp_config.selected_agent = agent_role
-                # for now, made for the case of agent_roles being unique.
-                npcs = [1 if agent != agent_role else 0 for agent in self.agent_roles]
+
                 # boolean mask of npcs: 0 represents the selected agent, 1 represents an agent controlled by the environment.
-                policies_controlled_here = [agent_role] # integer indexes of policy controlled here ( for now, just one. )
-                # apply a mask over specific policies in the config
+                policies_controlled_here = [polid] # integer indexes of policy controlled here ( for now, just one. )
+                num_vec_envs = self.policy_mapping.count(polid)
+                tmp_config.env.train.num_vec_envs = num_vec_envs
+                tmp_config.env.eval.num_vec_envs = num_vec_envs
+
+                # for the policies not controlled by the orchestrator-simulator, mark None.
+                self.simulator_policies = deepcopy(self.policy_mapping)
+                for idx, polid in enumerate(self.policy_mapping):
+                    if polid not in policies_controlled_here:
+                        self.simulator_policies[idx] = None
+
+                print('self.simulator_policies Nonified?', self.simulator_policies)
+                tmp_config.simulator_policies = self.simulator_policies
                 trainable = create_trainable()
 
                 experiment_name = tmp_config.train.experiment_name
@@ -197,7 +209,7 @@ class SelfPlayOrchestrator:
                 tmp_config.policies = {
                     polid: v for polid, v in tmp_config.policies.items() if polid in policies_controlled_here
                 }
-                tmp_config.npcs = npcs
+
                 print('policies_controlled_here', policies_controlled_here)
                 print('tmp_config', tmp_config)
 
@@ -220,7 +232,7 @@ class SelfPlayOrchestrator:
                     tune.with_resources(trainable_cls, resources={"cpu": 5}),
                     tune_config=tune.TuneConfig(
                             scheduler=pbt,
-                            num_samples=10,
+                            num_samples=50,
                             max_concurrent_trials=2,
                     ),
                     run_config=tune.RunConfig(
@@ -246,6 +258,9 @@ def create_trainable():
             """
             Sets up training. Merges base and ray config, replacing default hyperparams and specifications from base
             with whatever ray generates.
+
+            
+                            npcs = [1 if agent != agent_role else 0 for agent in self.agent_roles]
             Args:
                 - ray_config: Hyperparam ray_config passed down to us from the ray gods
                 - base_config: base ray_config from the yaml file (see tune.with_parameters to see
@@ -283,7 +298,7 @@ def create_trainable():
             policies_hparams = split_dict_by_prefix(ray_config)
             assert len(policies_hparams) == len(policies_config), 'Assertion failed, mismatching number of policies as specified by tune configuration,' \
                 'and number of policies under the policies section. Failing gracefully.'
-            num_policies = len(policies_hparams)
+
             for polid, incoming_policy_config in policies_hparams.items():
                 policies_config[polid] = replace_and_report(policies_config[polid], incoming_policy_config, merge=True)
             self.policies_config = policies_config
@@ -303,13 +318,13 @@ def create_trainable():
             # initialize the environment configurations, but throw in some other things from the main
             # configuration part that are required too.
             print('train_env_config', train_env_config)
+            print('eval_env_config', eval_env_config)
             _, train_env = build_env(
                 reward_names=CustomRewardNames,
                 rewards_dict=REWARDS_DICT,
                 policy_mapping=base_config.policy_mapping,
                 agent_roles=base_config.agent_roles,
                 self_play=base_config.self_play,
-                npcs=base_config.npcs,
                 db_path=base_config.db_path,
                 env_config=train_env_config,
                 num_iters=train_env_config.num_iters,
@@ -321,23 +336,24 @@ def create_trainable():
                 policy_mapping=base_config.policy_mapping,
                 agent_roles=base_config.agent_roles,
                 self_play=base_config.self_play,
-                npcs=base_config.npcs,
                 db_path=base_config.db_path,
                 env_config=eval_env_config,
-                num_iters=train_env_config.num_iters,
+                num_iters=eval_env_config.num_iters,
             )
 
             self.agent_roles = list(base_config.agent_roles)
-            self.policy_mapping = list(base_config.policy_mapping)
+            self.simulator_policies = list(base_config.simulator_policies)
             trial_name = self.trial_name
             trial_code = trial_name[:-6]
 
             self.eval_log_path = f"{self.root_dir}/ppo_logs/{trial_code}/{trial_name}"
             self.simulator = RLRolloutSimulator(
+                selfplay=True,
+                db_path=base_config.db_path,
                 train_env=train_env,
                 train_env_config=train_env_config,
                 policies_config=self.policies_config,
-                policy_mapping=self.policy_mapping,
+                policy_mapping=self.simulator_policies,
                 tensorboard_log=self.eval_log_path,
                 callbacks=None,
                 n_steps=training_config.n_steps,
@@ -368,7 +384,7 @@ def create_trainable():
                 in_bits=True if eval_env_config.binary == 'binary' else False,  # TODO this is really bad code
                 log_path=self.eval_log_path,
                 agent_roles=self.agent_roles,
-                policy_mapping=self.policy_mapping,
+                policy_mapping=self.simulator_policies,
                 eval_env_config=eval_env_config,
                 training_config=training_config,
                 eval_env=eval_env,                    

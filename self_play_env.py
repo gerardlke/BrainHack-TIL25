@@ -67,6 +67,8 @@ from supersuit.generic_wrappers.utils.shared_wrapper_util import shared_wrapper
 
 from otherppos import ModifiedMaskedPPO, ModifiedPPO
 
+from stable_baselines3.common.vec_env import DummyVecEnv
+
 class DummyGymEnv(gymnasium.Env):
     def __init__(self, observation_space, action_space):
         self.observation_space = observation_space
@@ -79,7 +81,6 @@ def build_env(
     policy_mapping,
     agent_roles,
     self_play,
-    npcs,
     db_path,
     env_config,
     num_iters=100,
@@ -139,19 +140,18 @@ def build_env(
     env = aec_to_parallel(env)
     env = frame_stack_v3(env, stack_size=frame_stack_size, stack_dim=0)
     if self_play:
-        assert npcs is not None, 'Assertion failed. Are you certain you are running selfplay.py if you are trying to conduct self play? We use an orchestrator there instead, which' \
-            ' contains this missing argument.'
         assert db_path is not None, 'Assertion failed. We require a path to database of network pools.'
         env = SelfPlayWrapper(env,
             policy_mapping=policy_mapping,
             agent_roles=agent_roles,
-            npcs=npcs,
             top_opponents=top_opponents,
             db_path=db_path,
         )
     
     env = ss.pettingzoo_env_to_vec_env_v1(env)
-    env = ss.concat_vec_envs_v1(env, num_vec_envs=num_vec_envs, num_cpus=4, base_class='stable_baselines3')
+    # more cpus = more parallelism, but higher mem consumption. Honestly the thing is quite fast already
+    # so screw parallelism this got me held up for a whole weekend figuring where the memory issue was
+    env = ss.concat_vec_envs_v1(env, num_vec_envs=num_vec_envs, num_cpus=1, base_class='stable_baselines3')
 
     return orig_env, env
 
@@ -172,8 +172,8 @@ class SelfPlayWrapper(BaseParallelWrapper):
     a custom step function that first runs predict to get all policies actions, then runs the parallelenv's step function
     on all actions concatenated together.
 
-    Now onto loading:
-    Loading policies has two scenarios, one where eval_mode is False and another when it is True.
+    Now onto choosing policies:
+    Choosing policies has two scenarios, one where eval_mode is False and another when it is True.
     When not evaluating, we will randomly pick an opponent.
     When in evaluation mode, there are several changes we must enforce.
     -> Despite the (quite bad seperation of) between responsibilities of env and simulator, we must at this scope
@@ -199,29 +199,23 @@ class SelfPlayWrapper(BaseParallelWrapper):
         env,
         policy_mapping,
         agent_roles,
-        npcs,
         db_path,
         top_opponents
     ):
         super().__init__(env)
         self.db_path = db_path
         # db interface (gerard)
-        self.db = RL_DB(db_file=self.db_path)
+        self.db = RL_DB(db_file=self.db_path, num_roles=len(agent_roles))
 
         self.policy_mapping = policy_mapping
         self.agent_roles = agent_roles
         # self.opponent_sampling = opponent_sampling
         # somethign about loading best models here
-        assert max(npcs) == 1 and min(npcs) == 0, 'Assertion failed, npcs list recieved by SelfPlayWrapper reset is not a boolean mask.'
-        assert npcs.count(0) == 1, 'Assertion failed, npcs list recieved by SelfPlayWrapper contains more than one element 1; we only support ' \
-            'one external non-npc agent (mask value 0) currently.'
-        
-        self.npcs = npcs  # this tells us what agents are to be considered as part of environment.
 
-        self.environment_policies = [policy for policy, keep in zip(self.policy_mapping, self.npcs) if keep]
-        self.environment_agents = [agent for agent, keep in zip(self.possible_agents, self.npcs) if keep]
+        # self.environment_policies = [policy for policy, keep in zip(self.policy_mapping, self.npcs) if keep]
+        # self.environment_agents = [agent for agent, keep in zip(self.possible_agents, self.npcs) if keep]
         self.agent_policy_mapping = {
-            agent: policy for agent, policy in zip(self.environment_agents, self.environment_policies)
+            agent: policy for agent, policy in zip(self.possible_agents, self.policy_mapping)
         }  # lookup table, to see what agent maps to what policy id.
 
         self.loaded_policies = None
@@ -230,33 +224,29 @@ class SelfPlayWrapper(BaseParallelWrapper):
         # get all the currently best policies.
         self.top_opponents = top_opponents  # temporarily hardcode to 1 rn for debugging
         self.loaded = {
-            polid: self.load_policies(self.db.get_checkpoint_by_policy(polid, shuffle=True)) for polid
-            in self.environment_policies
+            agent: self.load_policies(
+                self.db.get_checkpoint_by_role(
+                    policy=self.agent_policy_mapping[agent], role=idx, shuffle=False
+                )) for idx, agent
+            in enumerate(self.possible_agents)
         }  # load all policies at the start and then just select them later
     
         self.loaded_policies = {
-            polid: loads[0] for polid, loads
+            agent: loads[0] for agent, loads
             in self.loaded.items()
         }
         self.loaded_desc = {
-            polid: loads[1] for polid, loads
+            agent: loads[1] for agent, loads
             in self.loaded.items()
         }
         self.db.shut_down_db()
         del self.db  # cant subprocess sqlite connection in vectorized env
-
+        self.do_reset_policy_pointers = True
         self.eval = self.aec_env.eval
         self.do_eval_reset = False
-        self.policy_pointers = {polid: 0 for polid in self.environment_policies}  # pointers for tracking what policies
-        # we have covered so far, track up to top_opponents number.
 
         self.episode_policies = {}  # temporary dict to index what policies are available for use each episode.
         # reset when reset is called.
-        # ok we will choose some policies to start with
-        self.choose_policies()
-        # now self.episode_policies should be populated.
-
-
         self.episode_rewards = defaultdict(float)  # dictionary to store the current episode rewards of each agent.
 
         # ----------------------- DEPRECEATED (BUT NOT DELETED) --------------------------
@@ -267,11 +257,6 @@ class SelfPlayWrapper(BaseParallelWrapper):
         # random_hash = hashlib.sha256(random_bytes).hexdigest()
 
         # self.hash = random_hash
-
-    @staticmethod
-    def next_highest_key(d, n):
-        keys = [key for key in d.keys() if key > n]
-        return min(keys) if keys else None
     
     def load_policies(self, checkpoints: list):
         all_loaded = []
@@ -300,14 +285,14 @@ class SelfPlayWrapper(BaseParallelWrapper):
                 
         return all_loaded, all_desc
     
-    def reset_and_choose(self):
+    def reset_and_enable_choose(self, env_agents):
         """
-        Calls reset, then choose.
+        Calls reset, then enables choose to be called.
         """
         self.reset()
-        self.choose_policies()
+        self.choose_policies(env_agents)
 
-    def choose_policies(self):
+    def choose_policies(self, env_agents):
         """
         Connects to database and recieves information on what opponent policies exist.
         Loading policies has two scenarios, one where eval_mode is False and another when it is True.
@@ -319,29 +304,38 @@ class SelfPlayWrapper(BaseParallelWrapper):
             - list of selected opponents, length equal to the number of policies we control
         """
         if not self.eval:
-            for polid, policies in self.loaded_policies.items():
+            for agent, policies in self.loaded_policies.items():
                 random_policy = random.choice(policies)
-                self.episode_policies[polid] = random_policy
+                self.episode_policies[agent] = random_policy
 
         else:
-            policy_intraidxes = list(self.policy_pointers.values())
-            for (polid, policies), policy_intraidx in zip(self.loaded_policies.items(), policy_intraidxes):
-                self.episode_policies[polid] = policies[policy_intraidx]
+            self.reset_policy_pointers(env_agents)
+            # select episode policies based on policy pointers' indexes.
+            for agent, policy_intraidx in self.policy_pointers.items():
+                policies = self.loaded_policies[agent]
+                self.episode_policies[agent] = policies[policy_intraidx]
 
-
-            for polid, policies in self.loaded_policies.items():
-                # increment pointers.
-                if self.policy_pointers[polid] != len(policies) - 1:
-                    self.policy_pointers[polid] += 1
+            # now merry go round pointer time
+            for agent, policy_intraidx in self.policy_pointers.items():
+                policies = self.loaded_policies[agent]
+                if self.policy_pointers[agent] != len(policies) - 1:
+                    self.policy_pointers[agent] += 1
                     break
                 else:   # e.g top opponents 3, we only have until index 2 to pick, so reset for that polid
-                    self.policy_pointers[polid] = 0
-                    next_polid = self.next_highest_key(self.policy_pointers, polid)
-                    if next_polid is None:
+                    self.policy_pointers[agent] = 0
+                    # if we reset for final pointer, its joever, reset all
+                    # print('curr agent', agent)
+                    # print('index of curr', env_agents.index(agent))
+                    # print('len(env_agents) - 1', len(env_agents) - 1)
+                    if env_agents.index(agent) == len(env_agents) - 1:
                         self.do_eval_reset = True
-                        self.policy_pointers = {polid: 0 for polid in self.environment_policies}
+                        self.do_reset_policy_pointers = True
 
-                
+    def reset_policy_pointers(self, env_agents):
+        # Helper func to reset policy pointers 
+        if self.do_reset_policy_pointers:
+            self.policy_pointers = {agent: 0 for agent in self.possible_agents if agent in env_agents}
+            self.do_reset_policy_pointers = False
 
     def reset(self, seed: int | None=None, options: dict | None=None):  # type: ignore
         """
@@ -349,29 +343,32 @@ class SelfPlayWrapper(BaseParallelWrapper):
         Will connect to DB and update its score values, for each policy that is being evaluated.
         Uses a system of 'score difference times 10%' to change the score of the policy.
         """
+        self.has_reset = True
+
         if not hasattr(self, 'db'):  # setup again because we dont need to deal with multiproc
-            self.db = RL_DB(db_file=self.db_path)
+            self.db = RL_DB(db_file=self.db_path, num_roles=len(self.agent_roles))
 
         # print(any(episode_reward > 0 for episode_reward in list(self.episode_rewards.values())))
+        # if we have nonzero rewards, and if we are in evaluation mode (where we are truly grading the policies)
         if any(episode_reward > 0 for episode_reward in list(self.episode_rewards.values())) and self.eval:
             self.db.set_up_db(timeout=100)
             
             for agent, episode_reward in self.episode_rewards.items():
-                if agent in self.agent_policy_mapping:
-                    
-                    policy = self.agent_policy_mapping[agent]
-                    policies_desc = self.loaded_desc[policy]
-                    selected_policy_idx = self.policy_pointers[policy]
+                if agent in self.policy_pointers:
+
+                    policies_desc = self.loaded_desc[agent]
+                    selected_policy_idx = self.policy_pointers[agent]
                     policy_desc = policies_desc[selected_policy_idx]
 
-                    if not isinstance(policy_desc, str):  # make sure it is a dict and not 'random'
-                        checkpoints = self.db.get_checkpoint_by_id(id=policy_desc['id'])
-                        checkpoint = checkpoints[0]
-                        prev_score = checkpoint['score'] 
-
+                    if not isinstance(policy_desc, str):  # make sure it is a dict and not 'random'.
+                        # find its unique id, and the score that was relevant in its choice
+                        checkpoint = self.db.get_checkpoint_by_id(id=policy_desc['id'])[0]
+                        role_idx = self.possible_agents.index(agent)
+                        prev_score = checkpoint[f'score_{role_idx}'] 
+                        # TODO: update how we update scores to be score-specific id
                         diff = episode_reward - prev_score
                         prev_score += diff * 0.1
-                        self.db.update_score(prev_score, id=policy_desc['id'])
+                        self.db.update_score(prev_score, role=role_idx, id=policy_desc['id'])
                         # checkpoints = self.db.get_checkpoint_by_id(id=policy_desc['id'])
                         # checkpoint = checkpoints[0]
                         # print('thing after update', checkpoint)
@@ -403,53 +400,55 @@ class SelfPlayWrapper(BaseParallelWrapper):
         We also have to update ELO of each policy within this function, since the knowledge of what policies
         are being evaluated is contained within the environment. This feels wrong but oh well, what todo.
         """
-        for agent in actions:
-            if agent in self.environment_agents:
-                policy_to_run = self.agent_policy_mapping[agent]
-                loaded_policy = self.episode_policies[policy_to_run]
+        # first, look at actions. For agent ids with -1, those indexes are meant to be controlled by us.
+        env_agents = [k for k, v in actions.items() if v.item() is -1]
+        
+        # check if we have chosen our policies yet. self.choose_policies should be called only after every reset.
+        if self.has_reset:
+            self.has_reset = False  
+            self.choose_policies(env_agents)
+            # print('do we truly reset', self.do_eval_reset)
+
+        for agent, action in actions.items():
+            if agent in env_agents:
+                loaded_policy = self.episode_policies[agent]
+
                 if loaded_policy == 'random':
                     action = np.random.randint(0, 5)
                 else:
                     obs = self.modifiers[agent].get_last_obs()
-                    # print('obs before', obs, [o.shape for o in obs.values()])
-                    obs = {
-                        k: torch.Tensor(o).unsqueeze(0) for k, o in obs.items()  # very scuffed, but suspect because
-                        # the policy expects this to be [n_envs, ...] shape, have to throw in a padded dimension
-                        # maybe we shouldve kept even untrained policies to simulator, although that has its upsides and
-                        # downsides i guess
-                    }
-                    if 'action_masks' not in inspect.signature(loaded_policy.policy.forward).parameters:
-                        action, _, _ = loaded_policy.policy.forward(obs)
-                    else:
-                        action_masks = loaded_policy.get_action_masks(obs)
-                        action, _, _ = loaded_policy.policy.forward(obs, action_masks=action_masks)
+
+                    with torch.no_grad():
+                        if 'action_masks' not in inspect.signature(loaded_policy.policy.forward).parameters:
+                            action, _ = loaded_policy.policy.predict(obs, deterministic=False)
+                        else:
+                            action_masks = loaded_policy.get_action_masks(obs)
+
+                            action, _ = loaded_policy.policy.predict(obs, action_masks=action_masks, deterministic=False)
 
                 if isinstance(action, torch.Tensor):
                     action = action.item()
-                actions[agent] = action
         
+            actions[agent] = action
+
         # i have no clue why there are two dones, but wokie
         observations, rewards, terms, truncs, infos = super().step(actions)  # type: ignore
+
         for agent, reward in rewards.items():
             self.episode_rewards[agent] += reward
-            # print('added reward', reward, self.episode_rewards)
 
         # intercept terms/truncs. if any True, it means we are doing a reset. choose policies first, to see if we should do a true reset.
         # i.e TRULY return True to the vector env wrapper around this, thereby returning True to the simulator or callback.
         if any(list(terms.values())) or any(list(truncs.values())):
-            self.reset_and_choose()  # within this is where self.do_eval_reset is called.
-        # print('curr eval rewards', rewards)
-        # print('curr evaluated policies', {
-        #     polid: desc[self.policy_pointers[polid]] for polid, desc in self.loaded_desc.items()
-        # })
-        if self.eval:  # first if eval mode, set it to False.
-            terms = {k: False for k in terms}
-            truncs = {k: False for k in truncs}
-            if self.do_eval_reset:  # then check for and do eval reset.
-                terms = {k: True for k in terms}  # commit sewer side
-                truncs = {k: True for k in truncs}
+            self.reset()  # within this is where self.do_eval_reset is called.
+            if self.eval:  # first if eval mode, set terminations n truncations to False.
+                terms = {k: False for k in terms}
+                truncs = {k: False for k in truncs}
+                if self.do_eval_reset:  # then check for and do eval reset.
+                    terms = {k: True for k in terms}  # commit sewer side
+                    truncs = {k: True for k in truncs}
 
-                self.do_eval_reset = False
+                    self.do_eval_reset = False
 
         return observations, rewards, terms, truncs, infos
 

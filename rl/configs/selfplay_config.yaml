@@ -2,8 +2,6 @@
 # seperate train and eval env
 env:
   train:
-    # rewards:
-    num_vec_envs: 2
     binary: True
     novice: True
     num_iters: 100
@@ -13,12 +11,10 @@ env:
     collisions: True
     viewcone_only: False
     see_scout_reward: True
-    top_opponents: 2
+    top_opponents: 5
 
 
   eval:
-    # rewards:
-    num_vec_envs: 1
     binary: True
     novice: True
     num_iters: 100
@@ -57,20 +53,20 @@ policies:
 
 
 agent_roles: [0, 1, 2, 3]
-policy_mapping: [0, 1, 2, 3]  # currently only works for
-# 4 unique policies.
+policy_mapping: [0, 0, 0, 0]  # db only currently works for 4
+# unique roles.
 self_play: True
 db_name: test.db
 
 train:
-  num_loops: 10
+  num_loops: 1000
   n_steps: 100
-  training_iters: 25000  # this already accounts for n steps
+  training_iters: 5000  # this already accounts for n steps
   # this is to ensure that we have the same number of TOTAL iterations, across
   # all runs. oh but it doesnt account for num of vector envs, we multiply that for
   # you, so if you set this to be 250000, and have 2 vec envs * 4 agents, it will be 250k * 2 * 4 = 2mil
-  n_eval_episodes: 1
-  num_evals: 10
+  n_eval_episodes: 2
+  num_evals: 8
   root_dir: '/mnt/e/BrainHack-TIL25/selfplay'
   # root_dir: '/home/jovyan/interns/ben/BrainHack-TIL25/selfplay'
   experiment_name: 'masked_ppo'
@@ -93,7 +89,7 @@ tune:
     choices: [100]
   num_iters:
     type: choice
-    choices: [100]
+    choices: [256, 512, 1024]
   guard_captures:
     type: choice
     choices: [50, 200, 500]
@@ -117,7 +113,7 @@ tune:
     choices: [true]
   distance_penalty:
     type: choice
-    choices: [false]
+    choices: [true]
   see_scout_reward:
     type: choice
     choices: [true]
@@ -160,8 +156,8 @@ tune:
 
       ent_coef:
         type: loguniform
-        min: 1e-5
-        max: 1e-2
+        min: 5e-4
+        max: 1e-1
 
       gae_lambda:
         type: choice
@@ -194,8 +190,8 @@ tune:
 
       ent_coef:
         type: loguniform
-        min: 1e-5
-        max: 1e-2
+        min: 5e-4
+        max: 1e-1
 
       gae_lambda:
         type: choice
@@ -228,8 +224,8 @@ tune:
 
       ent_coef:
         type: loguniform
-        min: 1e-5
-        max: 1e-2
+        min: 5e-4
+        max: 1e-1
 
       gae_lambda:
         type: choice
@@ -262,8 +258,8 @@ tune:
 
       ent_coef:
         type: loguniform
-        min: 1e-5
-        max: 1e-2
+        min: 5e-4
+        max: 1e-1
 
       gae_lambda:
         type: choice

@@ -142,12 +142,13 @@ class ModifiedMaskedPPO(MaskablePPO):
         viewcone = observation['viewcone']
 
         # will fail for the case of normal obs for now
-        action_masks = np.zeros((viewcone.shape[0], self.action_space.n))
         if viewcone.ndim == 2:
+            action_masks = np.zeros((viewcone.shape[0], self.action_space.n))
             test = rearrange(viewcone, 'A (S R C B) -> A S B R C', B=8, R=7, C=5)
             test = test[:, -1, :, :, :]
             center_tile_walls = test[:, :4, 2, 2]
         elif viewcone.ndim == 1:
+            action_masks = np.zeros((1, self.action_space.n))
             test = rearrange(viewcone, '(S R C B) -> S B R C', B=8, R=7, C=5)
             test = test[-1, :, :, :]
             center_tile_walls = test[:4, 2, 2][np.newaxis, :]

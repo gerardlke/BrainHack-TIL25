@@ -1,10 +1,12 @@
 from re import L
+from utils import generate_policy_agent_indexes
 import time
 import inspect
 from collections import deque
 from typing import Any, Dict, List, Optional, Type, Union, TypeVar
 from copy import deepcopy
 from omegaconf import OmegaConf
+from collections import defaultdict
 import gymnasium
 from gymnasium import spaces
 from stable_baselines3.common.buffers import DictRolloutBuffer
@@ -21,7 +23,7 @@ from stable_baselines3.common.utils import (configure_logger, obs_as_tensor,
                                             safe_mean)
 from stable_baselines3.common.vec_env import DummyVecEnv
 from pettingzoo import ParallelEnv
-
+from rl.db.db import RL_DB
 from stable_baselines3.common.utils import safe_mean
 from einops import rearrange
 from supersuit.vector.markov_vector_wrapper import MarkovVectorEnv
@@ -50,6 +52,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
 
     def __init__(
         self,
+        db_path,
         train_env,
         train_env_config,
         policies_config,
@@ -59,6 +62,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         tensorboard_log,
         verbose,
         use_action_masking,
+        selfplay: bool = False,
     ):
         """
         All that is required is the configuration file.
@@ -66,6 +70,22 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         Also, action masking is done here instead of in the environment. Mask function is local
         to policy, so we hold no warranties.
 
+        This simulator will train one given policy at any given time. 
+        This policy may map to several different roles. We would like to train them simultaneously (but not against each other at the same time, instead
+        only facing prior checkpoints of themselves), such that despite training the same policy for different roles, they still share the same 
+        parameters and are checkpointed as such. For this to occur, our train/eval environment will have to have n vector envs
+        equivalent to the number of different agents each policy controls. An example should clarify:
+
+        E.g policy mapping [0, 1, 1, 1]. We are currently training policy 1, and would like it to play-off against static opponents,
+        hence two agents under still-learning policies cannot interact in the same environment. Hence, vectorize envs by 3, resulting in:
+        [static, 1, static, static],
+        [static, static, 1, static],
+        [static, static, static, static],
+        where static denotes a policy loaded in from DB (or random).
+
+        This is honestly very scuffed, and requires that we pass in to the envs a None action for agents we do not control.
+        The env will handle loading from there.
+         
         Init flows as follows:
         -> Define policy(ies), which utilize the environment observation space
         -> Define policy-agent indexes, which are used to map the various indexes of the observation
@@ -79,11 +99,21 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         -> Aggregate all actions and step in the environment, rinsing and repeating.
 
         Args:
+            - db_path: Path to database where checkpoint pointers are stored.
+            - train_env: Training environment to call step
+            - train_env_config: Configuration of the training env.
             - policies_config: Dictionary from omegaconf, policies can be access by 
                 string of their policy id, e.g policies_config['0']
-            - 
+            - policy_mapping: Maps policies to env indexes.
+                Each element may be integer, representing the associated policy id, or None, which
+                    represents a policy we are not in control of.
+            - n_steps: Number of steps to take and to fill buffer up with, before training commences
+            - use_action_masking: Boolean on whether or not action masking is being used.
 
         """
+        self.selfplay = selfplay
+        print('-----------------------SELFPLAY MODE IN SIMULATOR IS SET TO TRUE------------------') if self.selfplay else None
+        self.db_path = db_path
         self.env = train_env
         self.total_envs = self.env.num_envs  # number of vec envs times number of agents from parallelization
         self.vec_envs = train_env_config.num_vec_envs
@@ -92,15 +122,15 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         self.action_masking = use_action_masking
 
         # check if policy_mapping and policy config have the same number of policies
-        all_policies_there = len(policies_config) == len(np.unique(np.array(self.policy_mapping)))
+        all_policies_there = len(policies_config) == len(set(self.policy_mapping))
         
         if not all_policies_there:
-            print(f'WARNING: Main configuration suggests that there are {len(np.unique(self.policy_mapping))} ' \
+            print(f'WARNING: Main configuration suggests that there are {len(set(self.policy_mapping))} ' \
                 f'total policies, but recieved policy configuration has {len(policies_config)} policies. ' \
                     'This mismatch should only be the case if self-play is being conducted.')
         
-        self.policy_agent_indexes = self.generate_policy_agent_indexes(
-            n_envs=self.vec_envs, policy_mapping=self.policy_mapping
+        self.policy_agent_indexes = generate_policy_agent_indexes(
+            n_envs=self.vec_envs, policy_mapping=self.policy_mapping, selfplay=self.selfplay
         )
         self.callbacks = callbacks
 
@@ -126,7 +156,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         self.policies = {}
         self._policies_config = deepcopy(policies_config)
         
-        for polid, policy_config in self._policies_config.items():
+        for role, (polid, policy_config) in enumerate(self._policies_config.items()):
             algo_type = eval(policy_config.algorithm)  # this will fail if the policy specified in the config
             # has not yet been imported. TODO do a registry if we aren't lazy?
             _policy_config = deepcopy(policy_config)
@@ -144,12 +174,35 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
                     **_policy_config
                 )
             else:
-                policy = algo_type(
-                    env = self.dummy_envs[polid],
-                    tensorboard_log=self.tensorboard_log,
-                    verbose=self.verbose,
-                    **_policy_config
-                )
+                # try to ping db to get best checkpoint for this policy and this role.
+                self.db = RL_DB(db_file=self.db_path, num_roles=len(self.policy_mapping))
+                self.db.set_up_db(timeout=100)
+                checkpoints = self.db.get_checkpoint_by_policy(policy=polid, shuffle=False)
+
+                if len(checkpoints) == 0:  # train from scratch.
+                    policy = algo_type(
+                        env = self.dummy_envs[polid],
+                        tensorboard_log=self.tensorboard_log,
+                        verbose=self.verbose,
+                        **_policy_config
+                    )
+                else:
+                    # EXPLODE FOR NOW TODO CODE FOR MEAN SCORE GRAB
+                    checkpoint_scores = {}
+                    for checkpoint in checkpoints:
+                        scores = [v for k, v in dict(checkpoint).items() if 'score' in k]
+                        checkpoint_scores[checkpoint] = sum(scores) / len(scores)
+
+                    best_checkpoint = max(checkpoint_scores, key=checkpoint_scores.get)
+                    filepath = best_checkpoint['filepath']
+                    print('best checkpoint fp', filepath)
+                    policy = algo_type.load(
+                        env = self.dummy_envs[polid],
+                        tensorboard_log=self.tensorboard_log,
+                        verbose=self.verbose,
+                        path=filepath,
+                        **_policy_config
+                    )
 
             self.policies[polid] = policy
 
@@ -315,7 +368,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         
         """
         # temporary lists to hold things before saved into history_buffer of agent.
-
+        print('--------in rollouts-------------')
         continue_training = True
         all_last_episode_starts = {}
         all_clipped_actions = {}
@@ -330,13 +383,12 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         total_rewards = {polid: [] for polid, policy in self.policies.items()}
         
         n_steps = 0
-        step_actions = np.zeros(self.total_envs, dtype=np.int64)
+        step_actions = np.full(self.total_envs, -1)
         the_first_key = list(self.policies.keys())[0]  # idk what keys self.policies will have sooo just get any one
 
         if last_obs_buffer is None:
             last_obs_buffer = self.format_env_returns(last_obs, self.policy_agent_indexes, to_tensor=False)
             last_obs = self.format_env_returns(last_obs, self.policy_agent_indexes, device=self.policies[the_first_key].device, to_tensor=True)
-
         # iterate over policies, and do pre-rollout setups.
         for idx, ((_, policy), (_, policy_index)) in enumerate(zip(self.policies.items(), self.policy_agent_indexes.items())):
             num_envs = len(policy_index)
@@ -351,7 +403,6 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
             eval_callback.on_rollout_start()
             policy._last_episode_starts = np.ones((num_envs,), dtype=bool)
             all_last_episode_starts[idx] = policy._last_episode_starts
-
 
         # do rollout
         while n_steps < n_rollout_steps:
@@ -392,10 +443,9 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
             # TODO: SETTLE HOW WE PASS TO STEP
             for polid, actions in all_clipped_actions.items():
                 policy_agent_index = self.policy_agent_indexes[polid]
+                # [step_actions.__setitem__(env_idx, actions[i]) for i, env_idx in enumerate(policy_agent_index)]
                 step_actions[policy_agent_index] = actions
-
             # actually step in the environment
-            # print('step_actions', step_actions)
             obs, rewards, dones, infos = self.env.step(step_actions)
 
             all_curr_obs = self.format_env_returns(obs, policy_agent_indexes=self.policy_agent_indexes, to_tensor=True, device=self.policies[the_first_key].device)
@@ -412,11 +462,19 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
             # TODO: dont be lazy.
             
             eval_callback.update_locals(locals())
-            thing, score = eval_callback.on_step()
+            thing, policy_episode_rewards = eval_callback.on_step()  # dict of {polid: [role_idx_score, ...] * n_episodes}
+            if isinstance(policy_episode_rewards, dict):
+
+                trainable_policy_episode_reward = list(policy_episode_rewards.values())[0]  # can only train one policy at a time moment
+                score_dict = {i: np.mean(trainable_policy_episode_reward[i::4]).item() for i in range(4)}
+
+            else:
+                score_dict = None
+            
             [
                 callback.on_step(
                     hparams=dict(self._policies_config[polid]),
-                    score=score,
+                    score_dict=score_dict,
             ) for callback, polid in zip(callbacks, self.policies)]
             if not thing:  # early stopping from StopTrainingOnNoModelImprovement
                 continue_training = False
@@ -513,7 +571,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
     @staticmethod
     def format_env_returns(
         env_returns: dict[str, np.ndarray] | np.ndarray | list[dict],
-        policy_agent_indexes: np.ndarray,
+        policy_agent_indexes: dict,
         to_tensor=True,
         device=None,
     ):
@@ -538,7 +596,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
             to_agents: list[np.ndarray] | list[dict[str, np.ndarray]], where first dimension of array is (num_envs.) and list is of length (num_agents).
 
         """
-        num_policies = len(policy_agent_indexes)
+        num_policies = len([k for k in policy_agent_indexes.keys() if k is not None])
         if to_tensor:
             assert device is not None, 'Assertion failed. format_env_returns function expects device to be stated if you want to run obs_as_tensor mutation.'
             mutate_func = obs_as_tensor
@@ -559,9 +617,9 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
             ]
         elif isinstance(env_returns, list):
             to_policies = [
-                list(itemgetter( *(policy_agent_indexes[polid].tolist()) )(env_returns))
+                list(itemgetter( *(policy_agent_indexes[polid]) )(env_returns))
                 if len(policy_agent_indexes[polid]) > 1
-                else [itemgetter( *(policy_agent_indexes[polid].tolist()) )(env_returns)]
+                else [itemgetter( *(policy_agent_indexes[polid]) )(env_returns)]
                 for polid in range(num_policies)
             ]
         else:
@@ -569,28 +627,6 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
                 Expected dict[str, np.ndarray] or np.ndarray or list.')
 
         return to_policies
-    
-    @staticmethod
-    def generate_policy_agent_indexes(n_envs, policy_mapping):
-        """
-        Input: A list of policy mapping each agent's index to a policy.
-        E.g default [1, 0, 0, 0] maps the 0th index agent to policy with id 1,
-        and 1, 2, 3 index to policy of id 0.
-        From this, create a nested list of n policies long, each list has indexes
-        of the vectorized environments index.
-        e.g n_envs = 2, policy mapping as above.
-        Output will be a dictionary:
-        {
-            0: [1, 2, 3, 5, 6, 7], 
-            1: [0, 4],
-        }
-        """
-        n_policy_mapping = np.array(policy_mapping * n_envs)
-        policy_indexes = {
-            polid: np.where(n_policy_mapping == polid)[0] for polid in np.unique(n_policy_mapping)
-        }
-
-        return policy_indexes
 
 
     @staticmethod
