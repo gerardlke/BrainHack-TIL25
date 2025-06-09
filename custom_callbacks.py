@@ -468,7 +468,7 @@ class CustomEvalCallback(EventCallback):
 
             if render:
                 env.render()
-
+        # print('episode_policy_rewards', episode_policy_rewards)
         mean_reward = [np.mean(episode_reward) for polid, episode_reward in episode_policy_rewards.items()]  # num_total_policies long
         std_reward = [np.std(episode_reward) for polid, episode_reward in episode_policy_rewards.items()]
         if reward_threshold is not None:

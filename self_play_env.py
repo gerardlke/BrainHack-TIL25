@@ -352,7 +352,7 @@ class SelfPlayWrapper(BaseParallelWrapper):
         # if we have nonzero rewards, and if we are in evaluation mode (where we are truly grading the policies)
         if any(episode_reward > 0 for episode_reward in list(self.episode_rewards.values())) and self.eval:
             self.db.set_up_db(timeout=100)
-            
+            # print('self.episode_rewards', self.episode_rewards)
             for agent, episode_reward in self.episode_rewards.items():
                 if agent in self.policy_pointers:
 
@@ -367,7 +367,7 @@ class SelfPlayWrapper(BaseParallelWrapper):
                         prev_score = checkpoint[f'score_{role_idx}'] 
                         # TODO: update how we update scores to be score-specific id
                         diff = episode_reward - prev_score
-                        prev_score += diff * 0.1
+                        prev_score += diff * 0.05  # completely agar agar only. lmao
                         self.db.update_score(prev_score, role=role_idx, id=policy_desc['id'])
                         # checkpoints = self.db.get_checkpoint_by_id(id=policy_desc['id'])
                         # checkpoint = checkpoints[0]

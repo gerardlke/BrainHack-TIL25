@@ -11,7 +11,7 @@ env:
     collisions: True
     viewcone_only: False
     see_scout_reward: True
-    top_opponents: 5
+    top_opponents: 10  # will randomly choose an opponent from the top ten roles
 
 
   eval:
@@ -24,7 +24,7 @@ env:
     collisions: True
     viewcone_only: False
     see_scout_reward: True
-    top_opponents: 3
+    top_opponents: 3 # will playoff every permutation of the top 3 roles
 
 
 
@@ -56,7 +56,8 @@ agent_roles: [0, 1, 2, 3]
 policy_mapping: [0, 0, 0, 0]  # db only currently works for 4
 # unique roles.
 self_play: True
-db_name: /home/jovyan/interns/ben/BrainHack-TIL25/selfplay/Orchestrator_6b7c101e/test.db
+# db_name: /home/jovyan/interns/ben/BrainHack-TIL25/selfplay/Orchestrator_6b7c101e/test.db
+db_name: selfplay_1pol.db
 
 train:
   num_loops: 1000
