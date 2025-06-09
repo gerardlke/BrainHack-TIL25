@@ -215,8 +215,8 @@ class CustomEvalCallback(EventCallback):
             # rewards postprocessing
             mean_policy_episode_rewards, mean_policy_episode_lengths = {}, {}
             for polid, policy_episode_reward in policy_episode_rewards.items():
-                mean_policy_episode_rewards[polid] = np.mean(policy_episode_reward) / self.num_opponent_combinations
-                mean_policy_episode_lengths[polid] = np.mean(policy_episode_lengths[polid]) / self.num_opponent_combinations 
+                mean_policy_episode_rewards[polid] = np.mean(policy_episode_reward)
+                mean_policy_episode_lengths[polid] = np.mean(policy_episode_lengths[polid])
 
             trainable_policy_episode_rewards = {
                 polid: mean_reward for polid, mean_reward in mean_policy_episode_rewards.items() if polid in self.model.policies
@@ -321,9 +321,9 @@ class CustomEvalCallback(EventCallback):
         total_envs = env.num_envs  # all agents times num of vector envs
         n_envs = self.num_total_policies * self.num_vec_envs # num policies we are training times num of envs
         
-        episode_policy_rewards = {polid: [] for polid in self.policy_agent_indexes}
+        episode_policy_rewards = {polid: ([0] * self.n_eval_episodes * len(indexes)) for polid, indexes in self.policy_agent_indexes.items()}
         # episode_roles_rewards = [[] for _ in range(num_roles)]
-        episode_lengths = {polid: [] for polid in self.policy_agent_indexes}
+        episode_lengths = {polid: ([0] * self.n_eval_episodes * len(indexes)) for polid, indexes in self.policy_agent_indexes.items()}
         all_clipped_actions = {polid: 0 for polid in self.policy_agent_indexes}
         all_actions = {polid: 0 for polid in self.policy_agent_indexes}
 
@@ -413,21 +413,18 @@ class CustomEvalCallback(EventCallback):
                 (_, current_length), # all n_env * num_agents under policy long e.g 6
                 (_, episode_reward), # empty list 
                 (_, episode_length), # empty list 
-                all_reward, # all n_env * num_agents under policy long e.g 6
-                all_done, # all n_env * num_agents under policy long e.g 6
-                all_info, # all n_env * num_agents under policy long e.g 6
             ) in zip(
                     self.policy_agent_indexes.items(),
                     current_policy_rewards.items(),  
                     current_lengths.items(),
                     episode_policy_rewards.items(), 
                     episode_lengths.items(),
-                    all_rewards,
-                    all_dones,
-                    all_infos,
             ):
                 # policy-based enumeration: each thing in the big tuple up there are of length n_envs
                 # policy_agent_index is the env_indexes of envs * num_agents, that correspond to each policy.
+                all_reward = all_rewards[polid]
+                all_done = all_dones[polid]
+                all_info = all_infos[polid]
                 for enum, env_index in enumerate(policy_agent_index):
                     current_reward[enum] += all_reward[enum]
                     current_length[enum] += 1
@@ -442,22 +439,27 @@ class CustomEvalCallback(EventCallback):
                     # count the outcomes towards final policy evaluation.
                     if episode_counts[env_index] < episode_count_targets[env_index]:
                         if done:
+                            tally_index = enum + episode_counts[env_index] * len(policy_agent_index)
                             if is_monitor_wrapped:
                                 # Atari wrapper can send a "done" signal when
                                 # the agent loses a life, but it does not correspond
                                 # to the true end of episode
                                 if "episode" in info.keys():
+                                    
                                     # Do not trust "done" with episode endings.
                                     # Monitor wrapper includes "episode" key in info if environment
                                     # has been wrapped with it. Use those rewards instead.
-                                    episode_reward.append(info["episode"]["r"])
-                                    episode_length.append(info["episode"]["l"])
-                                    # Only increment at the real end of an episode
+                                    episode_reward[tally_index] = info["episode"]["r"]
+                                    episode_length[tally_index] =info["episode"]["l"]
                                     episode_counts[env_index] += 1
+
                             else:
-                                episode_reward.append(current_reward[enum])  # add the current episode reward to cache of all
-                                episode_length.append(current_length[enum])
+                                tally_index = enum + episode_counts[env_index] * len(policy_agent_index)
+
+                                episode_reward[tally_index] = current_reward[enum]  / self.num_opponent_combinations  # add the current episode reward to cache of all
+                                episode_length[tally_index] = current_length[enum]  / self.num_opponent_combinations
                                 episode_counts[env_index] += 1
+                                
                             
                             current_reward[enum] = 0
                             current_length[enum] = 0
@@ -466,9 +468,9 @@ class CustomEvalCallback(EventCallback):
 
             if render:
                 env.render()
-        print('episode_policy_rewards', episode_policy_rewards)
-        mean_reward = [np.mean(episode_reward) / self.num_opponent_combinations for polid, episode_reward in episode_policy_rewards.items()]  # num_total_policies long
-        std_reward = [np.std(episode_reward) / self.num_opponent_combinations for polid, episode_reward in episode_policy_rewards.items()]
+
+        mean_reward = [np.mean(episode_reward) for polid, episode_reward in episode_policy_rewards.items()]  # num_total_policies long
+        std_reward = [np.std(episode_reward) for polid, episode_reward in episode_policy_rewards.items()]
         if reward_threshold is not None:
             assert mean_reward > reward_threshold, "Mean reward below threshold: " f"{mean_reward:.2f} < {reward_threshold:.2f}"
         if return_episode_rewards:

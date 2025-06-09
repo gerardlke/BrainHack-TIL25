@@ -7,7 +7,7 @@ env:
     num_iters: 100
     eval_mode: False
     frame_stack_size: 4
-    render_mode: 'rgb_array'
+    render_mode: 
     collisions: True
     viewcone_only: False
     see_scout_reward: True
@@ -20,7 +20,7 @@ env:
     num_iters: 100
     eval_mode: True
     frame_stack_size: 4
-    render_mode: 'rgb_array'
+    render_mode: 
     collisions: True
     viewcone_only: False
     see_scout_reward: True
@@ -56,20 +56,20 @@ agent_roles: [0, 1, 2, 3]
 policy_mapping: [0, 0, 0, 0]  # db only currently works for 4
 # unique roles.
 self_play: True
-db_name: test.db
+db_name: /home/jovyan/interns/ben/BrainHack-TIL25/selfplay/Orchestrator_6b7c101e/test.db
 
 train:
   num_loops: 1000
   n_steps: 100
-  training_iters: 5000  # this already accounts for n steps
+  training_iters: 50000  # this already accounts for n steps
   # this is to ensure that we have the same number of TOTAL iterations, across
   # all runs. oh but it doesnt account for num of vector envs, we multiply that for
   # you, so if you set this to be 250000, and have 2 vec envs * 4 agents, it will be 250k * 2 * 4 = 2mil
   n_eval_episodes: 2
-  num_evals: 8
-  root_dir: '/mnt/e/BrainHack-TIL25/selfplay'
-  # root_dir: '/home/jovyan/interns/ben/BrainHack-TIL25/selfplay'
-  experiment_name: 'masked_ppo'
+  num_evals: 10
+  # root_dir: '/mnt/e/BrainHack-TIL25/selfplay'
+  root_dir: '/home/jovyan/interns/ben/BrainHack-TIL25/selfplay'
+  experiment_name: 'selfplay_1pol'
   use_action_masking: True
   no_improvement: 5
   # all callbacks and their configurations here

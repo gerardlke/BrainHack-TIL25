@@ -2,6 +2,7 @@ import argparse
 import numpy as np
 import re
 import os
+import shutil
 import json
 import hashlib
 import uuid
@@ -143,8 +144,24 @@ class SelfPlayOrchestrator:
             'must have the same length as policy_mapping in the config.'
         self.policy_mapping = config.policy_mapping
         self.hash = generate_8char_hash()
-        self.config.train.root_dir = os.path.join(self.config.train.root_dir, f'Orchestrator_{self.hash}')
-        self.config.db_path = os.path.join(self.config.train.root_dir, self.config.db_name)
+        self.config.train.root_dir = os.path.join(self.config.train.root_dir, f'Orchestrator_{self.hash}/')
+        if not os.path.exists(self.config.db_name):
+            db_path = os.path.join(self.config.train.root_dir, self.config.db_name)
+        else:
+            db_path = self.config.db_name
+        # if path to db is not in our root directory, copy the db file into it.
+        file_path = Path(db_path).resolve()
+        parent_dir = Path(self.config.train.root_dir).resolve()
+        parent_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            file_path.relative_to(parent_dir)
+        except ValueError:
+            # do a copy
+            db_path = parent_dir / file_path.name
+            shutil.copy2(file_path, db_path)
+
+        self.config.db_path = db_path
         self.num_loops = self.config.train.num_loops * len(self.config.agent_roles)
         self.agent_roles = self.config.agent_roles
 
@@ -233,7 +250,7 @@ class SelfPlayOrchestrator:
                     tune_config=tune.TuneConfig(
                             scheduler=pbt,
                             num_samples=50,
-                            max_concurrent_trials=2,
+                            max_concurrent_trials=3,
                     ),
                     run_config=tune.RunConfig(
                         name='test',

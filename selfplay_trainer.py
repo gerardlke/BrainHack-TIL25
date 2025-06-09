@@ -156,7 +156,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         self.policies = {}
         self._policies_config = deepcopy(policies_config)
         
-        for role, (polid, policy_config) in enumerate(self._policies_config.items()):
+        for polid, policy_config in self._policies_config.items():
             algo_type = eval(policy_config.algorithm)  # this will fail if the policy specified in the config
             # has not yet been imported. TODO do a registry if we aren't lazy?
             _policy_config = deepcopy(policy_config)
@@ -596,7 +596,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
             to_agents: list[np.ndarray] | list[dict[str, np.ndarray]], where first dimension of array is (num_envs.) and list is of length (num_agents).
 
         """
-        num_policies = len([k for k in policy_agent_indexes.keys() if k is not None])
+        # num_policies = len([k for k in policy_agent_indexes.keys() if k is not None])
         if to_tensor:
             assert device is not None, 'Assertion failed. format_env_returns function expects device to be stated if you want to run obs_as_tensor mutation.'
             mutate_func = obs_as_tensor
@@ -606,22 +606,23 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
             kwargs = {}
         # 1. appropriate indexing
         if isinstance(env_returns, dict):
-            to_policies = [
-                    {k: mutate_func(np.take(v, policy_agent_indexes[polid], axis=0), **kwargs) 
+            to_policies = {
+                    key: {k: mutate_func(np.take(v, policy_agent_indexes[key], axis=0), **kwargs) 
                         for k, v in env_returns.items()}
-                for polid in range(num_policies)
-            ]
+                for key in policy_agent_indexes.keys() if key is not None
+            }
         elif isinstance(env_returns, np.ndarray):
-            to_policies = [
-                mutate_func(np.take(env_returns, policy_agent_indexes[polid], axis=0), **kwargs) for polid in range(num_policies)
-            ]
+            to_policies = {
+                key: mutate_func(np.take(env_returns, policy_agent_indexes[key], axis=0), **kwargs)
+                for key in policy_agent_indexes.keys() if key is not None
+            }
         elif isinstance(env_returns, list):
-            to_policies = [
-                list(itemgetter( *(policy_agent_indexes[polid]) )(env_returns))
-                if len(policy_agent_indexes[polid]) > 1
-                else [itemgetter( *(policy_agent_indexes[polid]) )(env_returns)]
-                for polid in range(num_policies)
-            ]
+            to_policies = {
+                key: list(itemgetter( *(policy_agent_indexes[key]) )(env_returns))
+                if len(policy_agent_indexes[key]) > 1
+                else [itemgetter( *(policy_agent_indexes[key]) )(env_returns)]
+                for key in policy_agent_indexes.keys() if key is not None
+            }
         else:
             raise AssertionError(f'Assertion failed. format_env_returns recieved unexpected type {type(env_returns)}. \
                 Expected dict[str, np.ndarray] or np.ndarray or list.')
