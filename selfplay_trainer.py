@@ -475,7 +475,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
                 score_dict = {}
                 # map rewards collected by each policy, to their respective roles.
                 relevant_roles = [role for polid, role in 
-                                zip(self.policy_mapping, self.agent_roles) if polid is not None]
+                                zip(self.policy_mapping, range(len(self.policy_mapping))) if polid is not None]
                 step = self.policy_mapping.count(trainable_policy)
                 for idx, role in enumerate(relevant_roles):
                     if policy is not None:

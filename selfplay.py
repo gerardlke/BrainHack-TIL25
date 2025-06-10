@@ -246,7 +246,7 @@ class SelfPlayOrchestrator:
                 # gets passed to the trainable. environment is initialized within trainable.
             
                 tuner = tune.Tuner(
-                    tune.with_resources(trainable_cls, resources={"cpu": 12}),
+                    tune.with_resources(trainable_cls, resources={"cpu": 20}),
                     tune_config=tune.TuneConfig(
                             scheduler=pbt,
                             num_samples=50,
