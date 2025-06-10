@@ -144,7 +144,7 @@ class SelfPlayOrchestrator:
             'must have the same length as policy_mapping in the config.'
         self.policy_mapping = config.policy_mapping
         self.hash = generate_8char_hash()
-        self.config.train.root_dir = os.path.join(self.config.train.root_dir, f'Orchestrator_{self.hash}/')
+        self.config.train.root_dir = os.path.join(self.config.train.root_dir, f'Orchestrator_{self.hash}')
         if not os.path.exists(self.config.db_name):
             db_path = os.path.join(self.config.train.root_dir, self.config.db_name)
         else:
@@ -246,7 +246,7 @@ class SelfPlayOrchestrator:
                 # gets passed to the trainable. environment is initialized within trainable.
             
                 tuner = tune.Tuner(
-                    tune.with_resources(trainable_cls, resources={"cpu": 20}),
+                    tune.with_resources(trainable_cls, resources={"cpu": 12}),
                     tune_config=tune.TuneConfig(
                             scheduler=pbt,
                             num_samples=50,

@@ -57,19 +57,20 @@ policy_mapping: [0, 0, 0, 0]  # db only currently works for 4
 # unique roles.
 self_play: True
 # db_name: /home/jovyan/interns/ben/BrainHack-TIL25/selfplay/Orchestrator_6b7c101e/test.db
-db_name: /mnt/e/BrainHack-TIL25/selfplay/Orchestrator_33237551/selfplay_1pol.db
-# db_name: selfplay_1pol.db
+# db_name: /mnt/e/BrainHack-TIL25/selfplay/Orchestrator_33237551/selfplay_1pol.db
+db_name: selfplay_1pol.db
 
 train:
   num_loops: 1000
   n_steps: 100
-  training_iters: 10000  # this already accounts for n steps
+  training_iters: 1000  # this already accounts for n steps
   # this is to ensure that we have the same number of TOTAL iterations, across
   # all runs. oh but it doesnt account for num of vector envs, we multiply that for
   # you, so if you set this to be 250000, and have 2 vec envs * 4 agents, it will be 250k * 2 * 4 = 2mil
   n_eval_episodes: 2
-  num_evals: 4
-  root_dir: '/mnt/e/BrainHack-TIL25/selfplay'
+  num_evals: 1
+  # root_dir: '/mnt/e/BrainHack-TIL25/selfplay'
+  root_dir: '/mnt/c/Users/bengo/BrainHack-TIL25/selfplay'
   # root_dir: '/home/jovyan/interns/ben/BrainHack-TIL25/selfplay'
   experiment_name: 'selfplay_1pol'
   use_action_masking: True
@@ -109,7 +110,7 @@ tune:
     choices: [-2, -1, 0]
   frame_stack_size:
     type: choice
-    choices: [4]
+    choices: [16]
   novice:
     type: choice
     choices: [true]
@@ -158,7 +159,7 @@ tune:
 
       ent_coef:
         type: loguniform
-        min: 5e-4
+        min: 5e-3
         max: 1e-1
 
       gae_lambda:
@@ -192,7 +193,7 @@ tune:
 
       ent_coef:
         type: loguniform
-        min: 5e-4
+        min: 5e-3
         max: 1e-1
 
       gae_lambda:
@@ -226,7 +227,7 @@ tune:
 
       ent_coef:
         type: loguniform
-        min: 5e-4
+        min: 5e-3
         max: 1e-1
 
       gae_lambda:
@@ -260,7 +261,7 @@ tune:
 
       ent_coef:
         type: loguniform
-        min: 5e-4
+        min: 5e-3
         max: 1e-1
 
       gae_lambda:

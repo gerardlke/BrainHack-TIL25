@@ -468,13 +468,20 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
             eval_callback.update_locals(locals())
             thing, policy_episode_rewards = eval_callback.on_step()  # dict of {polid: [role_idx_score, ...] * n_episodes}
             if isinstance(policy_episode_rewards, dict):
-                
+                # horrible code hardcoded to training one policy at a time case.
+                # please avert your eyes.
                 trainable_policy_episode_reward = list(policy_episode_rewards.values())[0]  # can only train one policy at a time moment
+                trainable_policy = list(policy_episode_rewards.keys())[0]
                 score_dict = {}
                 # map rewards collected by each policy, to their respective roles.
-                for i in policy_episode_rewards:
-                    step = self.policy_mapping.count(i)
-                    score_dict[i] = np.mean(trainable_policy_episode_reward[i::step]).item()
+                relevant_roles = [role for polid, role in 
+                                zip(self.policy_mapping, self.agent_roles) if polid is not None]
+                step = self.policy_mapping.count(trainable_policy)
+                for idx, role in enumerate(relevant_roles):
+                    if policy is not None:
+                        score_dict[role] = np.mean(trainable_policy_episode_reward[idx::step]).item()
+
+                print('score_dict', score_dict)
 
             else:
                 score_dict = None
