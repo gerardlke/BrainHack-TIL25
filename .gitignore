@@ -185,6 +185,8 @@ dreamervenv
 torchvenv
 ray_results
 SIMPLE
+selfplay
+*Orchestrator*
 
 # DB stuff
 *.db

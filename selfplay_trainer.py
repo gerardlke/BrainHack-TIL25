@@ -149,7 +149,10 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
         self.verbose = verbose
         self._logger = None
         env_fn = lambda: DummyGymEnv(self.observation_space, self.action_space)
-        self.dummy_envs = [DummyVecEnv([env_fn] * len(policy_index)) for _, policy_index in self.policy_agent_indexes.items()]
+        self.dummy_envs = {
+            polid: DummyVecEnv([env_fn] * len(policy_index))
+            for polid, policy_index in self.policy_agent_indexes.items()
+        }
         # this is a wrapper class, so it will not hold any states like
         # buffer_size, or action_noise. pass those straight to DQN.
 
@@ -191,6 +194,7 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
                     checkpoint_scores = {}
                     for checkpoint in checkpoints:
                         scores = [v for k, v in dict(checkpoint).items() if 'score' in k]
+                        print('scores???', dict(checkpoint))
                         checkpoint_scores[checkpoint] = sum(scores) / len(scores)
 
                     best_checkpoint = max(checkpoint_scores, key=checkpoint_scores.get)
@@ -464,9 +468,13 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
             eval_callback.update_locals(locals())
             thing, policy_episode_rewards = eval_callback.on_step()  # dict of {polid: [role_idx_score, ...] * n_episodes}
             if isinstance(policy_episode_rewards, dict):
-
+                
                 trainable_policy_episode_reward = list(policy_episode_rewards.values())[0]  # can only train one policy at a time moment
-                score_dict = {i: np.mean(trainable_policy_episode_reward[i::4]).item() for i in range(4)}
+                score_dict = {}
+                # map rewards collected by each policy, to their respective roles.
+                for i in policy_episode_rewards:
+                    step = self.policy_mapping.count(i)
+                    score_dict[i] = np.mean(trainable_policy_episode_reward[i::step]).item()
 
             else:
                 score_dict = None

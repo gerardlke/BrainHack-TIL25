@@ -115,7 +115,7 @@ class RL_DB:
             hyperparameters JSON,"""
         
         for role in range(self.num_roles):
-            query += f"score_{role} REAL NOT NULL DEFAULT 0"
+            query += f"score_{role} REAL DEFAULT 0"
             if role < (self.num_roles - 1):
                 query += ','
         
@@ -168,7 +168,9 @@ class RL_DB:
         query += """
         VALUES (?, ?, ?, ?,
         """ + ','.join(['?'] * len(roles)) + ');'
-
+        print('query', query)
+        print('roles', roles)
+        print('scores', scores)
         
         last_id = self.execute_query(query, (filepath, datetime.now().isoformat(), policy_id, json.dumps(hyperparameters), *scores))
         if last_id is not None:

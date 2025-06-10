@@ -28,7 +28,7 @@ class Observer:
     # def get_checkpoint_by_role():
 
 obs = Observer(
-    path='/home/jovyan/interns/ben/BrainHack-TIL25/selfplay/Orchestrator_bb3bc430/test.db',
+    path='/mnt/e/BrainHack-TIL25/selfplay/Orchestrator_81b3c98c/selfplay_1pol.db',
     top_few=3
 )
 obs.monitor()

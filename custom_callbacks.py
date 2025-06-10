@@ -455,9 +455,10 @@ class CustomEvalCallback(EventCallback):
 
                             else:
                                 tally_index = enum + episode_counts[env_index] * len(policy_agent_index)
-
+                                print('tally_index', tally_index)
                                 episode_reward[tally_index] = current_reward[enum]  / self.num_opponent_combinations  # add the current episode reward to cache of all
                                 episode_length[tally_index] = current_length[enum]  / self.num_opponent_combinations
+                                print('episode_reward', episode_reward)
                                 episode_counts[env_index] += 1
                                 
                             
@@ -468,7 +469,7 @@ class CustomEvalCallback(EventCallback):
 
             if render:
                 env.render()
-        # print('episode_policy_rewards', episode_policy_rewards)
+        print('episode_policy_rewards', episode_policy_rewards)
         mean_reward = [np.mean(episode_reward) for polid, episode_reward in episode_policy_rewards.items()]  # num_total_policies long
         std_reward = [np.std(episode_reward) for polid, episode_reward in episode_policy_rewards.items()]
         if reward_threshold is not None:
@@ -537,6 +538,8 @@ class CustomCheckpointCallback(CheckpointCallback):
             self.db.set_up_db(timeout=100)
             roles = list(score_dict.keys())
             scores = list(score_dict.values())
+            print('score_dict', score_dict)
+            print('scores', scores)
             checkpoints = [
                 dict(
                     filepath=model_path,

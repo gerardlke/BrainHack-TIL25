@@ -239,18 +239,18 @@ class SelfPlayOrchestrator:
                         time_attr="training_iteration",
                         metric="all_policy_scores",
                         mode="max",
-                        perturbation_interval=10,  # every n trials
+                        perturbation_interval=5,  # every n trials
                         hyperparam_mutations=merged)
                 
                 trainable_cls = tune.with_parameters(trainable, base_config=tmp_config) # this is where the edited config
                 # gets passed to the trainable. environment is initialized within trainable.
             
                 tuner = tune.Tuner(
-                    tune.with_resources(trainable_cls, resources={"cpu": 5}),
+                    tune.with_resources(trainable_cls, resources={"cpu": 20}),
                     tune_config=tune.TuneConfig(
                             scheduler=pbt,
                             num_samples=50,
-                            max_concurrent_trials=3,
+                            max_concurrent_trials=1,
                     ),
                     run_config=tune.RunConfig(
                         name='test',
