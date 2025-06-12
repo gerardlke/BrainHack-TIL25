@@ -194,7 +194,6 @@ class RLRolloutSimulator(OnPolicyAlgorithm):
                     checkpoint_scores = {}
                     for checkpoint in checkpoints:
                         scores = [v for k, v in dict(checkpoint).items() if 'score' in k]
-                        print('scores???', dict(checkpoint))
                         checkpoint_scores[checkpoint] = sum(scores) / len(scores)
 
                     best_checkpoint = max(checkpoint_scores, key=checkpoint_scores.get)

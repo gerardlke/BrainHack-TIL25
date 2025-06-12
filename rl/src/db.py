@@ -203,7 +203,7 @@ class RL_DB:
         query = f"""
         SELECT * FROM {self.table_name}
         WHERE policy_id = ?
-        ORDER BY score_{role} DESC;
+        ORDER BY id DESC;
         """
         checkpoints = self.execute_query_and_return(query, (policy,))
         if checkpoints:
@@ -213,6 +213,23 @@ class RL_DB:
         if self.verbose:
             print(f"No checkpoints found in the database for policy index {policy}.")
         return []
+    
+    # def get_checkpoint_by_role(self, policy, role, shuffle=False):
+    #     """
+    #     Retrieves single checkpoint from the checkpoints table by role score. """
+    #     query = f"""
+    #     SELECT * FROM {self.table_name}
+    #     WHERE policy_id = ?
+    #     ORDER BY score_{role} DESC;
+    #     """
+    #     checkpoints = self.execute_query_and_return(query, (policy,))
+    #     if checkpoints:
+    #         if shuffle:
+    #             random.shuffle(checkpoints)
+    #         return checkpoints
+    #     if self.verbose:
+    #         print(f"No checkpoints found in the database for policy index {policy}.")
+    #     return []
     
     def get_checkpoint_by_policy(self, policy, shuffle=False):
         """

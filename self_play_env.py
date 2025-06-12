@@ -149,10 +149,12 @@ def build_env(
         )
     
     env = ss.pettingzoo_env_to_vec_env_v1(env)
+    print('before concat vec envs')
+    print('num_vec_envs', num_vec_envs)
     # more cpus = more parallelism, but higher mem consumption. Honestly the thing is quite fast already
     # so screw parallelism this got me held up for a whole weekend figuring where the memory issue was
     env = ss.concat_vec_envs_v1(env, num_vec_envs=num_vec_envs, num_cpus=1, base_class='stable_baselines3')
-
+    print('after concat vec envs')
     return orig_env, env
 
 class SelfPlayWrapper(BaseParallelWrapper):
@@ -230,7 +232,7 @@ class SelfPlayWrapper(BaseParallelWrapper):
                 )) for idx, agent
             in enumerate(self.possible_agents)
         }  # load all policies at the start and then just select them later
-    
+        # print('done building self.loaded')
         self.loaded_policies = {
             agent: loads[0] for agent, loads
             in self.loaded.items()
@@ -239,10 +241,12 @@ class SelfPlayWrapper(BaseParallelWrapper):
             agent: loads[1] for agent, loads
             in self.loaded.items()
         }
+        # print('self.loaded_desc', self.loaded_desc)
         self.db.shut_down_db()
         del self.db  # cant subprocess sqlite connection in vectorized env
         self.do_reset_policy_pointers = True
         self.eval = self.aec_env.eval
+        self.deterministic = False
         self.do_eval_reset = False
 
         self.episode_policies = {}  # temporary dict to index what policies are available for use each episode.
@@ -261,6 +265,8 @@ class SelfPlayWrapper(BaseParallelWrapper):
     def load_policies(self, checkpoints: list):
         all_loaded = []
         all_desc = []  # purely for display now
+        # print('checkpoints', checkpoints, len(checkpoints))
+        # print('self.top_opponents', self.top_opponents)
         if len(checkpoints) == 0:
             # if no checkpoint, default to random behaviour.
             [all_loaded.append('random') for _ in range(self.top_opponents)]
@@ -276,7 +282,7 @@ class SelfPlayWrapper(BaseParallelWrapper):
                 algo_type = eval(hyperparams['algorithm'])
                 hyperparams.pop('algorithm')
                 policy_type = hyperparams['policy']
-                
+                print('loading policy...............')
                 policy = algo_type.load(
                     path=filepath,
                     policy=policy_type,
@@ -420,11 +426,11 @@ class SelfPlayWrapper(BaseParallelWrapper):
 
                     with torch.no_grad():
                         if 'action_masks' not in inspect.signature(loaded_policy.policy.forward).parameters:
-                            action, _ = loaded_policy.policy.predict(obs, deterministic=False)
+                            action, _ = loaded_policy.policy.predict(obs, deterministic=self.deterministic)
                         else:
                             action_masks = loaded_policy.get_action_masks(obs)
 
-                            action, _ = loaded_policy.policy.predict(obs, action_masks=action_masks, deterministic=False)
+                            action, _ = loaded_policy.policy.predict(obs, action_masks=action_masks, deterministic=self.deterministic)
 
                 if isinstance(action, torch.Tensor):
                     action = action.item()
@@ -449,7 +455,7 @@ class SelfPlayWrapper(BaseParallelWrapper):
                     truncs = {k: True for k in truncs}
 
                     self.do_eval_reset = False
-
+        # time.sleep(0.2)
         return observations, rewards, terms, truncs, infos
 
 
@@ -750,7 +756,7 @@ class modified_env(raw_env):
             # self.prev_distances[agent] = distance
             # negative of distance differences as reward increment? 
             # self.rewards[agent] += -diff 
-            self.rewards[agent] += -distance / 5
+            self.rewards[agent] += -distance * 0.05
 
             # see if we want to give rewards based on if scout is visible?
             # print('agent_obs', self.observations[agent])
@@ -919,7 +925,7 @@ class modified_env(raw_env):
         
         # generate arena for each match for advanced track
         if self._arena is None or (self._scout_selector.is_first() and not self.novice):
-            self._generate_arena()
+            self.generate_arena()
 
         self._reset_state()
         self.rewards = {agent: 0 for agent in self.agents}

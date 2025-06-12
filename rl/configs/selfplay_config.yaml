@@ -3,7 +3,7 @@
 env:
   train:
     binary: True
-    novice: True
+    novice: False
     num_iters: 100
     eval_mode: False
     frame_stack_size: 4
@@ -11,7 +11,7 @@ env:
     collisions: True
     viewcone_only: False
     see_scout_reward: True
-    top_opponents: 10  # will randomly choose an opponent from the top ten roles
+    top_opponents: 2  # will randomly choose an opponent from the top ten roles
 
 
   eval:
@@ -24,7 +24,7 @@ env:
     collisions: True
     viewcone_only: False
     see_scout_reward: True
-    top_opponents: 3 # will playoff every permutation of the top 3 roles
+    top_opponents: 2 # will playoff every permutation of the top 3 roles
 
 
 
@@ -53,25 +53,25 @@ policies:
 
 
 agent_roles: [0, 1, 2, 3]
-policy_mapping: [0, 1, 1, 1]  # db only currently works for 4
+policy_mapping: [0, 1, 2, 3]  # db only currently works for 4
 # unique roles.
 self_play: True
 # db_name: /home/jovyan/interns/ben/BrainHack-TIL25/selfplay/Orchestrator_6b7c101e/test.db
-db_name: /mnt/e/BrainHack-TIL25/selfplay/Orchestrator_33237551/selfplay_1pol.db
-# db_name: selfplay_1pol.db
+db_name: /mnt/e/BrainHack-TIL25/selfplay/Orchestrator_a784ccfd/selfplay_4pol.db
+# db_name: selfplay_4pol.db
 
 train:
-  num_loops: 1000
+  num_loops: 10000
   n_steps: 100
-  training_iters: 10000  # this already accounts for n steps
+  training_iters: 5000  # this already accounts for n steps
   # this is to ensure that we have the same number of TOTAL iterations, across
   # all runs. oh but it doesnt account for num of vector envs, we multiply that for
   # you, so if you set this to be 250000, and have 2 vec envs * 4 agents, it will be 250k * 2 * 4 = 2mil
-  n_eval_episodes: 2
+  n_eval_episodes: 1
   num_evals: 2
   root_dir: '/mnt/e/BrainHack-TIL25/selfplay'
   # root_dir: '/home/jovyan/interns/ben/BrainHack-TIL25/selfplay'
-  experiment_name: 'selfplay_1pol'
+  experiment_name: 'selfplay_4pol'
   use_action_masking: True
   no_improvement: 5
   # all callbacks and their configurations here
@@ -88,10 +88,10 @@ tune:
   # independent of policies
   n_steps:
     type: choice
-    choices: [100]
+    choices: [100, 300, 1000]
   num_iters:
     type: choice
-    choices: [100, 300]
+    choices: [100]
   guard_captures:
     type: choice
     choices: [50, 200, 500]
@@ -109,13 +109,13 @@ tune:
     choices: [-2, -1, 0]
   frame_stack_size:
     type: choice
-    choices: [4]
+    choices: [16]
   novice:
     type: choice
     choices: [true]
   distance_penalty:
     type: choice
-    choices: [true]
+    choices: [false]
   see_scout_reward:
     type: choice
     choices: [true]
@@ -139,7 +139,8 @@ tune:
 
       gamma:
         type: choice
-        choices: [0.90, 0.95, 0.99]
+        choices: [0.80, 0.85]
+        # choices: [0.90, 0.95, 0.99]
         # min: 0.90
         # max: 0.99
 
@@ -159,7 +160,7 @@ tune:
       ent_coef:
         type: loguniform
         min: 5e-4
-        max: 1e-1
+        max: 1e-2
 
       gae_lambda:
         type: choice
@@ -173,7 +174,7 @@ tune:
 
       gamma:
         type: choice
-        choices: [0.90, 0.95, 0.99]
+        choices: [0.999]
         # min: 0.90
         # max: 0.99
 
@@ -193,11 +194,11 @@ tune:
       ent_coef:
         type: loguniform
         min: 5e-4
-        max: 1e-1
+        max: 1e-2
 
       gae_lambda:
         type: choice
-        choices: [0.90, 0.95, 0.99]
+        choices: [0.999]
     
     2:
       learning_rate:
@@ -207,7 +208,7 @@ tune:
 
       gamma:
         type: choice
-        choices: [0.90, 0.95, 0.99]
+        choices: [0.999]
         # min: 0.90
         # max: 0.99
 
@@ -227,11 +228,11 @@ tune:
       ent_coef:
         type: loguniform
         min: 5e-4
-        max: 1e-1
+        max: 1e-2
 
       gae_lambda:
         type: choice
-        choices: [0.90, 0.95, 0.99]
+        choices: [0.999]
 
     3:
       learning_rate:
@@ -241,7 +242,7 @@ tune:
 
       gamma:
         type: choice
-        choices: [0.90, 0.95, 0.99]
+        choices: [0.999]
         # min: 0.90
         # max: 0.99
 
@@ -261,8 +262,8 @@ tune:
       ent_coef:
         type: loguniform
         min: 5e-4
-        max: 1e-1
+        max: 1e-2
 
       gae_lambda:
         type: choice
-        choices: [0.90, 0.95, 0.99]
+        choices: [0.999]

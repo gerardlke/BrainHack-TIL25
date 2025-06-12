@@ -5,7 +5,7 @@ asia-southeast1-docker.pkg.dev/til-ai-2025/mcdonalds-workers-repo-til-25/mcdonal
 
 # need access token. run gcloud auth print-access-token in vertex ai
 
-ya29.c.c0ASRK0GbqZvlaTjDNjBGtTsFKS-FV_D4C05bb0r4KEHZIKI6p93OsEG7dL1_YHwGP3H_db50LGYmjwFPCz9yf1qx9jNmxdQ3wriVmO9-vQuSyO4icifLrkgvlvk0hGNfXcQbYSUXQDfI7k6i6GatCHop_uLFNJVFQ1g0nLrOSek_IdPZS5YqIqnqqr3rp4sUfTD8G8fmqy2LkbkdBGJCwOpQiHreta-w171-vv-iyp-7H0MGcURToVMvHXrRspk_jggls5UHYmATKbwj40_roiLgeCOzt-Tv0SR4K4PekHMb05XcEXKT2aUclzTREWWmkT_GXaH43CYtFpbpIHzlixUraGgmVQlNJHLQ-9LEv0fZJdyWEihwcx-GLZbt7eO8zT393D3n7pjlU7c1-23zjn4F41xhxbkev-_zjmyVZxdU7rjkRv_X61aBquI-YRukgoZkrMqvqBn0IIu8_ZsWytM0kfU5lQ4XnFwtwwMd7lpw_tM6M1iS4Fk722nsR1ycJzwt4s35nJ21Yjr9X8lyjSOzc-7X4irVwgiXQx5wqXplMssh0e0JSdvfOJn4YgZjg8ep7Q1Ym3h7q7whSVtpQYbB5oF35Quz5fcYs9WhcRxs7UlcnaMJp4VkxS0-z-lVX-m_a59zJ29_nScRUzWwQbd19IeitIYyXp-Urjxe42FWVZ6YS2qvaQB515rnkF8sVQbmFqxe8hMdX5xZVOwVpiBwy1XlIQ_rmlUnMfeWBh4oIXelf_z5nWYBvX7M3MbXsSZdqsIF1Slc-44tBg9igtRJqOwxQR9bd1e3gXofqeee2kJ4uhxagQl4wyX0JwQimgsaoc0iV2lRoMSfYUe4buySgsgj6rqY_5gsI83FO4sueX9rfpQcax-xWcF45ZbxUhf8fBpilsQRz_IW4QY3vuwXqIi1rYRlyqyu7Me4Jmnor04gM7djfz8qvjWVBBVh4fv8deFnxh_xncsxZ6jh0a-mrnMSt2qkZQasgns7gIgasV737eIgad8s
+ya29.c.c0ASRK0GbiPpLxRIo0FQNpR98fgcXjj6qQQZ_swT_0ZcS8h42Bi6HfWeSo_5nUP8KfqDABUeqoXYgqbsl25JZ5y_6BVTlM6Ty8ZWMMKArf242B35I15AxrC_ExdUmU4V6yYIvQb9NUIJdXpvWMBnzeUIqWkh7QADgZd11WxpmOTYH7tFitWM_5sMrKtQ8rtmGsnWVNxcS2PmvwIBHN4EetMbYnJC5ynDmP42wr18ciW5tVWidiQXw6fc2hswBI2Qy7udtn8XJnj-oqmfx4-IdXC1rx3iqBDbGpsBU1vrMH9s1cc-KP41LHfiJm8gXufvmDL7mVxFAwH1xRuu_e06eOHqJOnZ60BUdMQFzCFoLRkgyflv-CqcmxiVi0dT36MZoN392P2VvgQwt2pMfvbj3IoYl_2nYUI4SZJBX1XuB2UdIshdsbFsBmo8pQe82o8h7wbYldddtB7wVXkVe5zw2k87zfbmjd_sO9Ydv83y_n53VvX4u0n06kkehana1i5Yb5MjRbWuZadolUXaJc-luWVqzROZaYzfaZet7ckFO_50hqQBSIdqBFf4FXW1ddjd47FxpOR5YdF-OjwOjvV7BgrUegYIxMBz66nJx7srtn_u6X3V5dSYs4fBWOR2ScBFibqhkmt6rm8vd-9i1SrOwyOh7lr9ux1gXx13r57RgFobneQpFp4-wpi8Xorr3rVi2wnSwsQy_4udIv_hcFBBorb98Z6-mdoyvMsZ88B_jpdbZzqRqbfYb2p7nrmwhxbazcm1_pO7e664RgF8lbl4FSvkoVh7WF9fbvnypFn8_bheYMmsB9Rl0yQmi0y44zqWuMdqSfwldt6grnfIJQwiFxzlS6bWU5Fi_1YYV_lgZMWg9z7309l4VqM8txxJ8bFI4-3zaw_M7Sz9zftFgUwnoXefyXFSFpcc7SYyYv9vQqb4lBax6FI8_d525MpShJZOvskJcWlyqZ60tVnaa09_fIs5MkFbx0a30u9YZuZgiJbc3jw_sVcyOzfeB
 docker login -u oauth2accesstoken -p YOUR_ACCESS_TOKEN_HERE https://asia-southeast1-docker.pkg.dev
 # as a sanity check, paste it into wherever config your docker is looking at, e.g 
 "C:\Users\Admin\.docker\config.json"
@@ -17,18 +17,18 @@ Ensure you see ONLY something like this
 	"credsStore": "wincred"
 }
 
+docker tag mcdonalds_workers-rl:finals asia-southeast1-docker.pkg.dev/til-ai-2025/mcdonalds-workers-repo-til-25/mcdonalds_workers-rl:finals
 
-docker push asia-southeast1-docker.pkg.dev/til-ai-2025/mcdonalds-workers-repo-til-25/mcdonalds-workers-rl:0.0.1
+docker push asia-southeast1-docker.pkg.dev/til-ai-2025/mcdonalds-workers-repo-til-25/mcdonalds_workers-rl:finals
 
 gcloud ai models upload from vertex ai:
 
 gcloud ai models upload \
     --region asia-southeast1 \
     --display-name test_rl \
-    --container-image-uri asia-southeast1-docker.pkg.dev/til-ai-2025/mcdonalds-workers-repo-til-25/mcdonalds-workers-rl:0.0.6_4ag \
+    --container-image-uri asia-southeast1-docker.pkg.dev/til-ai-2025/mcdonalds-workers-repo-til-25/mcdonalds_workers-rl:finals \
     --container-health-route /health \
     --container-predict-route /rl \
     --container-ports 5004 \
     --version-aliases default \
-    --project til-ai-25 \
-    --access-token-file access-token.json
+

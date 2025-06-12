@@ -5,7 +5,7 @@ from einops import rearrange
 
 class RLManager:
 
-    def __init__(self, vis=True):
+    def __init__(self):
         self.path = "/workspace/model_folder/novice_ppo_long_binaryenv_varyall_novice_True_run_train_0bf0b_00008_3932160_steps"
         self.model = PPO.load(
             path=self.path

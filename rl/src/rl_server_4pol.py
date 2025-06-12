@@ -10,25 +10,26 @@ from rl_manager_4pol import RLManager
 app = FastAPI()
 
 global manager
-manager = RLManager()
+manager = RLManager(
+    db_path='/workspace/model_folder/Orchestrator_a784ccfd/selfplay_4pol.db',
+    # db_path='/mnt/e/BrainHack-TIL25/selfplay/Orchestrator_a784ccfd/selfplay_4pol.db',
+    policy_mapping=[0, 1, 2, 3],
+    top_opponents=3,
+)
 
 
 @app.post("/rl")
 async def rl(request: Request) -> dict[str, list[dict[str, int]]]:
     """Feeds an observation into the RL model.
-
     Returns action taken given current observation (int)
     """
-
     # get observation, feed into model
     input_json = await request.json()
-    print('input_json', input_json)
 
     predictions = []
     # each is a dict with one key "observation" and the value as a dictionary observation
     for instance in input_json["instances"]:
         observation = instance["observation"]
-        print('observation', observation)
 
         # reset environment on a new round
         if observation["step"] == 0:
@@ -57,4 +58,4 @@ def health() -> dict[str, str]:
     return {"message": "health ok"}
 
 
-# uvicorn rl_server:app --port 5004 --host 0.0.0.0 --reload
+# uvicorn rl_server_4pol:app --port 5004 --host 0.0.0.0 --reload

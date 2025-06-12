@@ -239,18 +239,18 @@ class SelfPlayOrchestrator:
                         time_attr="training_iteration",
                         metric="all_policy_scores",
                         mode="max",
-                        perturbation_interval=5,  # every n trials
+                        perturbation_interval=4,  # every n trials
                         hyperparam_mutations=merged)
                 
                 trainable_cls = tune.with_parameters(trainable, base_config=tmp_config) # this is where the edited config
                 # gets passed to the trainable. environment is initialized within trainable.
             
                 tuner = tune.Tuner(
-                    tune.with_resources(trainable_cls, resources={"cpu": 20}),
+                    tune.with_resources(trainable_cls, resources={"cpu": 5}),
                     tune_config=tune.TuneConfig(
                             scheduler=pbt,
-                            num_samples=50,
-                            max_concurrent_trials=1,
+                            num_samples=8,
+                            max_concurrent_trials=4,
                     ),
                     run_config=tune.RunConfig(
                         name='test',
@@ -346,7 +346,7 @@ def create_trainable():
                 env_config=train_env_config,
                 num_iters=train_env_config.num_iters,
             )
-
+            print('done building train env.')
             _, eval_env = build_env(
                 reward_names=CustomRewardNames,
                 rewards_dict=STD_REWARDS_DICT,
@@ -357,7 +357,8 @@ def create_trainable():
                 env_config=eval_env_config,
                 num_iters=eval_env_config.num_iters,
             )
-
+            print('done building eval env.')
+            
             self.agent_roles = list(base_config.agent_roles)
             self.simulator_policies = list(base_config.simulator_policies)
             trial_name = self.trial_name
