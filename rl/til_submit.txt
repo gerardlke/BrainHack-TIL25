@@ -3,8 +3,32 @@ til submit runs docker tag, docker push, and gcloud ai models upload
 tag:
 asia-southeast1-docker.pkg.dev/til-ai-2025/mcdonalds-workers-repo-til-25/mcdonalds-workers-rl:0.0.1
 
-docker push asia-southeast1-docker.pkg.dev/til-ai-2025/mcdonalds-workers-repo-til-25/mcdonalds-workers-rl:0.0.1
+# need access token. run gcloud auth print-access-token in vertex ai
 
-gcloud ai models upload:
+ya29.c.c0ASRK0GbiPpLxRIo0FQNpR98fgcXjj6qQQZ_swT_0ZcS8h42Bi6HfWeSo_5nUP8KfqDABUeqoXYgqbsl25JZ5y_6BVTlM6Ty8ZWMMKArf242B35I15AxrC_ExdUmU4V6yYIvQb9NUIJdXpvWMBnzeUIqWkh7QADgZd11WxpmOTYH7tFitWM_5sMrKtQ8rtmGsnWVNxcS2PmvwIBHN4EetMbYnJC5ynDmP42wr18ciW5tVWidiQXw6fc2hswBI2Qy7udtn8XJnj-oqmfx4-IdXC1rx3iqBDbGpsBU1vrMH9s1cc-KP41LHfiJm8gXufvmDL7mVxFAwH1xRuu_e06eOHqJOnZ60BUdMQFzCFoLRkgyflv-CqcmxiVi0dT36MZoN392P2VvgQwt2pMfvbj3IoYl_2nYUI4SZJBX1XuB2UdIshdsbFsBmo8pQe82o8h7wbYldddtB7wVXkVe5zw2k87zfbmjd_sO9Ydv83y_n53VvX4u0n06kkehana1i5Yb5MjRbWuZadolUXaJc-luWVqzROZaYzfaZet7ckFO_50hqQBSIdqBFf4FXW1ddjd47FxpOR5YdF-OjwOjvV7BgrUegYIxMBz66nJx7srtn_u6X3V5dSYs4fBWOR2ScBFibqhkmt6rm8vd-9i1SrOwyOh7lr9ux1gXx13r57RgFobneQpFp4-wpi8Xorr3rVi2wnSwsQy_4udIv_hcFBBorb98Z6-mdoyvMsZ88B_jpdbZzqRqbfYb2p7nrmwhxbazcm1_pO7e664RgF8lbl4FSvkoVh7WF9fbvnypFn8_bheYMmsB9Rl0yQmi0y44zqWuMdqSfwldt6grnfIJQwiFxzlS6bWU5Fi_1YYV_lgZMWg9z7309l4VqM8txxJ8bFI4-3zaw_M7Sz9zftFgUwnoXefyXFSFpcc7SYyYv9vQqb4lBax6FI8_d525MpShJZOvskJcWlyqZ60tVnaa09_fIs5MkFbx0a30u9YZuZgiJbc3jw_sVcyOzfeB
+docker login -u oauth2accesstoken -p YOUR_ACCESS_TOKEN_HERE https://asia-southeast1-docker.pkg.dev
+# as a sanity check, paste it into wherever config your docker is looking at, e.g 
+"C:\Users\Admin\.docker\config.json"
+Ensure you see ONLY something like this
+{
+	"auths": {
+		"asia-southeast1-docker.pkg.dev": {}
+	},
+	"credsStore": "wincred"
+}
 
-gcloud ai models upload --region asia-southeast1 --display-name test_rl --container-image-uri asia-southeast1-docker.pkg.dev/til-ai-2025/mcdonalds-workers-repo-til-25/mcdonalds-workers-rl:0.0.1 --container-health-route /health --container-predict-route /rl --container-ports 5004 --version-aliases default --project til-ai-25 --access-token-file E:/BrainHack-TIL25/auth_file
+docker tag mcdonalds_workers-rl:finals asia-southeast1-docker.pkg.dev/til-ai-2025/mcdonalds-workers-repo-til-25/mcdonalds_workers-rl:finals
+
+docker push asia-southeast1-docker.pkg.dev/til-ai-2025/mcdonalds-workers-repo-til-25/mcdonalds_workers-rl:finals
+
+gcloud ai models upload from vertex ai:
+
+gcloud ai models upload \
+    --region asia-southeast1 \
+    --display-name test_rl \
+    --container-image-uri asia-southeast1-docker.pkg.dev/til-ai-2025/mcdonalds-workers-repo-til-25/mcdonalds_workers-rl:finals \
+    --container-health-route /health \
+    --container-predict-route /rl \
+    --container-ports 5004 \
+    --version-aliases default \
+

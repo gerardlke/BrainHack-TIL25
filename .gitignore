@@ -127,9 +127,15 @@ celerybeat.pid
 
 # Environments
 .env
+<<<<<<< HEAD
 .venv
 env/
 venv/
+=======
+.venv*
+env/
+venv*/
+>>>>>>> rl_selfplay
 ENV/
 env.bak/
 venv.bak/
@@ -170,6 +176,7 @@ cython_debug/
 
 # ignore .json files generated while doing gcloud things
 src/gcloud/*.json
+<<<<<<< HEAD
 untitled.txt
 *.pt
 *.pth
@@ -182,3 +189,26 @@ untitled.txt
 *.zip
 
 *checkpoint*
+=======
+
+
+# others
+ray-dreamer
+logs*
+*logs
+my_training_runs
+checkpoints
+*.zip
+.vscode
+dreamerv3
+dreamervenv
+torchvenv
+ray_results
+SIMPLE
+selfplay
+*Orchestrator*
+
+# DB stuff
+*.db
+*.sql
+>>>>>>> rl_selfplay

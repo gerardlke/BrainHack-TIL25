@@ -11,17 +11,20 @@ ENV PYTHONUNBUFFERED=1
 ENV PIP_ROOT_USER_ACTION=ignore
 WORKDIR /workspace
 
-# Installs your dependencies.
-RUN pip install -U pip
-COPY rl_torch_requirements.txt .
-RUN pip install --no-cache-dir -r rl_torch_requirements.txt
-
 # Copies your source files.
 COPY src .
 COPY model_folder /workspace/model_folder
 
+# Installs your dependencies.
+RUN pip install -U pip
+COPY \requirements.txt .
+RUN python -m pip install --no-cache-dir -r \requirements.txt
+
+COPY temp_change_fps.py /workspace/temp_change_fps.py
+RUN python temp_change_fps.py
+
 # Starts your model server.
-CMD uvicorn rl_server:app --port 5004 --host 0.0.0.0
+CMD uvicorn rl_server_4pol:app --port 5004 --host 0.0.0.0
 
 # til submit runs docker tag, docker push, and gcloud ai models upload
 

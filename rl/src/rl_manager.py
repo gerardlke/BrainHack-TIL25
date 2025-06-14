@@ -5,8 +5,8 @@ from einops import rearrange
 
 class RLManager:
 
-    def __init__(self, vis=True):
-        self.path = "/workspace/model_folder/novice_ppo_long_binaryenv_worldmodel_1331200_steps.zip"
+    def __init__(self):
+        self.path = "/workspace/model_folder/novice_ppo_long_binaryenv_varyall_novice_True_run_train_0bf0b_00008_3932160_steps"
         self.model = PPO.load(
             path=self.path
         )
@@ -35,7 +35,7 @@ class RLManager:
         #     R=5, C=7, B=8)
         # is_scout = binary_obs[5, 2, 2]
         self.past_obs = self.stack_frames(self.past_obs, viewcone, self.model.observation_space)
-        action, _ = self.model.predict(self.past_obs, deterministic=True)
+        action, _ = self.model.predict(self.past_obs, deterministic=False)
 
         return action
 

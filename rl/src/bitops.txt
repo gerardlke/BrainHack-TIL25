@@ -1,0 +1,74 @@
+{
+    0: [
+        'Black tile',
+        'Empty tile',
+        ],
+    1: [
+        {
+            'type': cv2.rectangle,
+            'size': 20,
+            'color': (255, 0, 0),
+            'thickness': -1,
+        },
+        {
+            'type': cv2.rectangle,
+            'size': 20,
+            'color': (0, 0, 255),
+            'thickness': -1,
+        },
+    ],
+    2: [
+        None, 
+        {
+            'type': cv2.circle,
+            'radius': 40,
+            'color': (0, 255, 0),
+            'thickness': -1,
+        },
+    ],
+    3: [
+        None, 
+        {
+            'type': cv2.circle,
+            'radius': 60,
+            'color': (0, 0, 255),
+            'thickness': -1,
+        },
+    ],
+    4: [
+        None, 
+        {
+            'type': cv2.line,
+            'color': (0, 0, 0),
+            'thickness': 10,
+            'orientation': 'right',
+        },
+    ],
+    5: [
+        None, 
+        {
+            'type': cv2.line,
+            'color': (0, 0, 0),
+            'thickness': 10,
+            'orientation': 'bottom',
+        },
+    ],
+    6: [
+        None, 
+        {
+            'type': cv2.line,
+            'color': (0, 0, 0),
+            'thickness': 10,
+            'orientation': 'left',
+        },
+    ],
+    7: [
+        None, 
+        {
+            'type': cv2.line,
+            'color': (0, 0, 0),
+            'thickness': 10,
+            'orientation': 'top',
+        },
+    ],
+}
