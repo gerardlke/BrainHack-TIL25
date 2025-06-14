@@ -60,3 +60,7 @@ class CVManager:
 
         # Return a single dictionary with all predictions grouped by image
         return image_predictions
+
+
+
+
