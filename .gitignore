@@ -171,3 +171,14 @@ cython_debug/
 # ignore .json files generated while doing gcloud things
 src/gcloud/*.json
 untitled.txt
+*.pt
+*.pth
+*.safetensors
+*.bin\*.zip
+*.pt
+*.pth
+*.safetensors
+*.bin
+*.zip
+
+*checkpoint*
